@@ -1594,6 +1594,121 @@ window.addEventListener('storage', function(e) {
   }
 });
 
+// ─── Real-time Polling ────────────────────────────────────────────────────────
+let _pollInterval = null;
+let _lastTicketCount = 0;
+let _lastNotifCount = 0;
+let _lastChatMsgCount = 0;
+let _lastInternoMsgCount = 0;
+let _lastSuporteChatKeys = '';
+
+async function pollUpdates() {
+  if (!dbReady || !db) return;
+  try {
+    // ── Tickets ──────────────────────────────────────────────────────────────
+    const ticketRows = await db.query('SELECT * FROM tickets ORDER BY created_at ASC');
+    const newTickets = ticketRows.rows.map(rowToTicket);
+    if (JSON.stringify(newTickets.map(t => t.id + t.status + t.prioridade + t.responsavel + (t.observacoes||[]).length)) !==
+        JSON.stringify(chamados.map(t => t.id + t.status + t.prioridade + t.responsavel + (t.observacoes||[]).length))) {
+      chamados = newTickets;
+      atualizarHome();
+      renderMeusChamados();
+      if (logado) { renderPainelLista(); atualizarStatsEmp(); }
+      const pg = document.querySelector('.page.active');
+      if (pg && pg.id === 'page-relatorios') renderGraficos();
+    }
+
+    // ── Staff ─────────────────────────────────────────────────────────────────
+    const staffRows = await db.query('SELECT * FROM support_staff ORDER BY id ASC');
+    const newStaff = staffRows.rows.map(rowToStaff);
+    if (JSON.stringify(newStaff) !== JSON.stringify(FUNCIONARIOS.filter(f => f.usuario !== 'admin'))) {
+      FUNCIONARIOS = newStaff;
+      if (!FUNCIONARIOS.find(f => f.usuario === 'admin'))
+        FUNCIONARIOS.unshift({ usuario: 'admin', senha: 'admin', nome: 'Administrador', role: 'Admin', foto: '' });
+      const pg = document.querySelector('.page.active');
+      if (pg && pg.id === 'page-equipe') renderEquipe();
+    }
+
+    // ── Notifications ─────────────────────────────────────────────────────────
+    const notifRows = await db.query('SELECT * FROM notifications ORDER BY created_at DESC LIMIT 20');
+    const newNotifs = notifRows.rows.map(r => ({
+      titulo: r.titulo, texto: r.texto, data: r.created_at,
+      destinatario: r.destinatario || '', ignorar: r.ignorar || ''
+    }));
+    if (JSON.stringify(newNotifs) !== JSON.stringify(notificacoes)) {
+      notificacoes = newNotifs;
+      renderNotifs();
+    }
+
+    // ── Chat Suporte ──────────────────────────────────────────────────────────
+    const chatRows = await db.query('SELECT * FROM chats_suporte WHERE encerrado = false ORDER BY created_at DESC');
+    const newChatKeys = chatRows.rows.map(c => c.cpf).sort().join(',');
+    let suporteMudou = newChatKeys !== _lastSuporteChatKeys;
+    _lastSuporteChatKeys = newChatKeys;
+
+    for (const c of chatRows.rows) {
+      const msgs = await db.query(
+        `SELECT * FROM chat_messages WHERE chat_key = $1 ORDER BY created_at ASC`,
+        [`SUPORTE_${c.cpf}`]
+      );
+      const newMsgs = msgs.rows.map(m => ({ autor: m.autor, texto: m.texto, isStaff: m.is_staff, data: m.created_at }));
+      const oldLen = chatsData[c.cpf]?.mensagens?.length || 0;
+      if (newMsgs.length !== oldLen || !chatsData[c.cpf]) {
+        suporteMudou = true;
+        chatsData[c.cpf] = {
+          nome: c.nome, assunto: c.assunto, observacao: c.observacao,
+          responsavel: c.responsavel, mensagens: newMsgs
+        };
+      }
+    }
+    if (suporteMudou) {
+      const pg = document.querySelector('.page.active');
+      if (pg && pg.id === 'page-suporte') {
+        if (chatMode === 'admin') renderChatList();
+        if (chatActiveCpf && chatsData[chatActiveCpf]) renderChatMsgs(chatActiveCpf);
+      }
+    }
+
+    // ── Chat Interno Geral ────────────────────────────────────────────────────
+    const geralRows = await db.query(`SELECT * FROM chat_messages WHERE chat_key = 'GERAL' ORDER BY created_at ASC`);
+    const newGeralMsgs = geralRows.rows.map(r => ({ autor: r.autor, texto: r.texto, data: r.created_at }));
+    if (newGeralMsgs.length !== chatInternoMsgs.length) {
+      chatInternoMsgs = newGeralMsgs;
+      const pg = document.querySelector('.page.active');
+      if (pg && pg.id === 'page-chat') { renderChatInternoList(); renderChatInterno(); }
+      else updateChatBadge();
+    }
+
+    // ── DMs ───────────────────────────────────────────────────────────────────
+    const dmRows = await db.query(`SELECT * FROM chat_messages WHERE chat_key != 'GERAL' AND chat_key NOT LIKE 'SUPORTE_%' ORDER BY created_at ASC`);
+    const newDMs = {};
+    dmRows.rows.forEach(r => {
+      if (!newDMs[r.chat_key]) newDMs[r.chat_key] = [];
+      newDMs[r.chat_key].push({ autor: r.autor, texto: r.texto, data: r.created_at });
+    });
+    const oldDMLen = Object.values(directMsgs).reduce((s, a) => s + a.length, 0);
+    const newDMLen = Object.values(newDMs).reduce((s, a) => s + a.length, 0);
+    if (newDMLen !== oldDMLen) {
+      directMsgs = newDMs;
+      const pg = document.querySelector('.page.active');
+      if (pg && pg.id === 'page-chat') { renderChatInternoList(); renderChatInterno(); }
+      else updateChatBadge();
+    }
+
+  } catch (err) {
+    console.warn('Poll error:', err);
+  }
+}
+
+function startPolling(intervalMs = 3000) {
+  if (_pollInterval) clearInterval(_pollInterval);
+  _pollInterval = setInterval(pollUpdates, intervalMs);
+}
+
+function stopPolling() {
+  if (_pollInterval) { clearInterval(_pollInterval); _pollInterval = null; }
+}
+
 // ─── DB status indicator ──────────────────────────────────────────────────────
 function showDBStatus(ok) {
   const badge = document.createElement('div');
@@ -1624,4 +1739,8 @@ function showDBStatus(ok) {
   renderNotifs();
   atualizarHome();
   renderEquipe();
+
+  if (ok) {
+    startPolling(3000); // poll every 3 seconds when DB is available
+  }
 })();
