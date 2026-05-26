@@ -2,7 +2,11 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="theme-color" content="#0056e0" media="(prefers-color-scheme: light)"/>
+  <meta name="theme-color" content="#070e1c" media="(prefers-color-scheme: dark)"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
   <title>HelpDesk Pro — Sistema Empresarial</title>
   <link rel="stylesheet" href="style.css"/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
@@ -652,7 +656,7 @@
         <div class="form-group" style="margin-top: 1rem;"><label>Seu CPF</label><input type="text" id="chatCpf" placeholder="Ex: 000.000.000-00" maxlength="14" oninput="this.value = this.value.replace(/\D/g, '').replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d{1,2})$/, '$1-$2')"></div>
         <div class="form-group" style="margin-top: 1rem;">
           <label>Qual o assunto?</label>
-          <select id="chatDuvida" style="width: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-family: inherit;">
+          <select id="chatDuvida" class="filter-sel" style="width: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-family: inherit;">
             <option value="">Selecione o assunto...</option>
             <option value="TI">Problemas Técnicos / TI</option>
             <option value="Recursos Humanos">Recursos Humanos</option>
