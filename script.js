@@ -1,43 +1,338 @@
 'use strict';
 
-let chamados = JSON.parse(localStorage.getItem('hd_chamados') || '[]');
-let notificacoes = JSON.parse(localStorage.getItem('hd_notifs') || '[]');
-let logado = false;
-let chartInstances = {};
+// ─── PGlite Database Layer ────────────────────────────────────────────────────
+let db = null;
+let dbReady = false;
 
-const defaultFuncionarios = [
-  { usuario: 'ariel',      senha: '123', nome: 'Ariel',            role: 'Gerente', foto: 'ariel.jpeg' },
-  { usuario: 'kevin',      senha: '123', nome: 'Kevin',            role: 'Gerente', foto: 'kevin.jpeg' },
-  { usuario: 'gustavo',    senha: '123', nome: 'Gustavo',          role: 'Gerente', foto: 'gustavo.jpeg' },
-  { usuario: 'heloisa',    senha: '123', nome: 'Heloisa',          role: 'Gerente', foto: 'helo.jpeg' },
-  { usuario: 'fofinho',    senha: '123', nome: 'Gabriel',          role: 'Gerente', foto: 'gabriel.jpeg' },
-  { usuario: 'sarrinho',   senha: '123', nome: 'Pedro',            role: 'Gerente', foto: 'pedro.jpeg' },
-];
+async function initDB() {
+  try {
+    const { PGlite } = await import('https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/index.js');
+    db = new PGlite('idb://helpdesk-pro');
 
-let FUNCIONARIOS = JSON.parse(localStorage.getItem('hd_funcionarios'));
-if (!FUNCIONARIOS || FUNCIONARIOS.length === 0) {
-  FUNCIONARIOS = defaultFuncionarios;
-  localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
-} else {
-  let changed = false;
-  defaultFuncionarios.forEach(df => {
-    const existing = FUNCIONARIOS.find(f => f.usuario.toLowerCase() === df.usuario.toLowerCase());
-    if (!existing) {
-      FUNCIONARIOS.push(df);
-      changed = true;
-    } else if (df.foto && existing.foto !== df.foto) {
-      existing.foto = df.foto;
-      changed = true;
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS support_staff (
+        id BIGSERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL UNIQUE,
+        role TEXT NOT NULL,
+        senha TEXT NOT NULL,
+        foto TEXT DEFAULT '',
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS users (
+        id BIGSERIAL PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        email TEXT NOT NULL UNIQUE,
+        password TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS tickets (
+        id TEXT PRIMARY KEY,
+        user_name TEXT NOT NULL,
+        user_cpf TEXT,
+        user_email TEXT,
+        setor TEXT NOT NULL,
+        tipo TEXT NOT NULL,
+        prioridade TEXT DEFAULT 'Não definida',
+        descricao TEXT NOT NULL,
+        status TEXT DEFAULT 'Aberto',
+        responsavel TEXT DEFAULT '',
+        observacoes TEXT DEFAULT '[]',
+        historico TEXT DEFAULT '[]',
+        created_at TIMESTAMPTZ DEFAULT now(),
+        updated_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS notifications (
+        id BIGSERIAL PRIMARY KEY,
+        titulo TEXT NOT NULL,
+        texto TEXT NOT NULL,
+        destinatario TEXT DEFAULT '',
+        ignorar TEXT DEFAULT '',
+        read BOOLEAN DEFAULT false,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS chat_messages (
+        id BIGSERIAL PRIMARY KEY,
+        chat_key TEXT NOT NULL,
+        autor TEXT NOT NULL,
+        texto TEXT NOT NULL,
+        is_staff BOOLEAN DEFAULT false,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS chats_suporte (
+        cpf TEXT PRIMARY KEY,
+        nome TEXT NOT NULL,
+        assunto TEXT DEFAULT '',
+        observacao TEXT DEFAULT '',
+        responsavel TEXT DEFAULT '',
+        encerrado BOOLEAN DEFAULT false,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS app_config (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
+
+    // Seed default staff if empty
+    const staffCount = await db.query('SELECT COUNT(*) as c FROM support_staff');
+    if (parseInt(staffCount.rows[0].c) === 0) {
+      for (const f of defaultFuncionarios) {
+        await db.query(
+          `INSERT INTO support_staff (name, email, role, senha, foto) VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (email) DO NOTHING`,
+          [f.nome, `${f.usuario}@helpdesk.local`, f.role, f.senha, f.foto || '']
+        );
+      }
     }
-  });
-  if (changed) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
+
+    // Load all data into memory
+    await reloadAllData();
+    dbReady = true;
+    console.log('✅ PGlite database ready');
+    return true;
+  } catch (err) {
+    console.error('❌ PGlite init failed, falling back to localStorage:', err);
+    dbReady = false;
+    loadFromLocalStorage();
+    return false;
+  }
 }
 
-function salvar() {
+async function reloadAllData() {
+  // Load tickets
+  const ticketRows = await db.query('SELECT * FROM tickets ORDER BY created_at ASC');
+  chamados = ticketRows.rows.map(rowToTicket);
+
+  // Load staff
+  const staffRows = await db.query('SELECT * FROM support_staff ORDER BY id ASC');
+  FUNCIONARIOS = staffRows.rows.map(rowToStaff);
+  if (!FUNCIONARIOS.find(f => f.usuario === 'admin')) {
+    FUNCIONARIOS.unshift({ usuario: 'admin', senha: 'admin', nome: 'Administrador', role: 'Admin', foto: '' });
+  }
+
+  // Load notifications (last 20)
+  const notifRows = await db.query('SELECT * FROM notifications ORDER BY created_at DESC LIMIT 20');
+  notificacoes = notifRows.rows.map(r => ({
+    titulo: r.titulo,
+    texto: r.texto,
+    data: r.created_at,
+    destinatario: r.destinatario || '',
+    ignorar: r.ignorar || ''
+  }));
+
+  // Load chat interno geral
+  const geralRows = await db.query(`SELECT * FROM chat_messages WHERE chat_key = 'GERAL' ORDER BY created_at ASC`);
+  chatInternoMsgs = geralRows.rows.map(r => ({ autor: r.autor, texto: r.texto, data: r.created_at }));
+
+  // Load DMs
+  const dmRows = await db.query(`SELECT * FROM chat_messages WHERE chat_key != 'GERAL' AND chat_key NOT LIKE 'SUPORTE_%' ORDER BY created_at ASC`);
+  directMsgs = {};
+  dmRows.rows.forEach(r => {
+    if (!directMsgs[r.chat_key]) directMsgs[r.chat_key] = [];
+    directMsgs[r.chat_key].push({ autor: r.autor, texto: r.texto, data: r.created_at });
+  });
+
+  // Load suporte chats
+  const chatRows = await db.query('SELECT * FROM chats_suporte WHERE encerrado = false ORDER BY created_at DESC');
+  chatsData = {};
+  for (const c of chatRows.rows) {
+    const msgs = await db.query(
+      `SELECT * FROM chat_messages WHERE chat_key = $1 ORDER BY created_at ASC`,
+      [`SUPORTE_${c.cpf}`]
+    );
+    chatsData[c.cpf] = {
+      nome: c.nome,
+      assunto: c.assunto,
+      observacao: c.observacao,
+      responsavel: c.responsavel,
+      mensagens: msgs.rows.map(m => ({
+        autor: m.autor,
+        texto: m.texto,
+        isStaff: m.is_staff,
+        data: m.created_at
+      }))
+    };
+  }
+}
+
+function rowToTicket(r) {
+  return {
+    id: r.id,
+    nome: r.user_name,
+    cpf: r.user_cpf || '',
+    email: r.user_email || '',
+    setor: r.setor,
+    tipo: r.tipo,
+    prioridade: r.prioridade || 'Não definida',
+    descricao: r.descricao,
+    status: r.status,
+    responsavel: r.responsavel || '',
+    observacoes: JSON.parse(r.observacoes || '[]'),
+    historico: JSON.parse(r.historico || '[]'),
+    data: r.created_at
+  };
+}
+
+function rowToStaff(r) {
+  // Extract username from email (before @)
+  const usuario = r.email ? r.email.split('@')[0] : r.name.toLowerCase();
+  return {
+    usuario,
+    senha: r.senha,
+    nome: r.name,
+    role: r.role,
+    foto: r.foto || ''
+  };
+}
+
+// DB write helpers
+async function dbSaveTicket(t) {
+  if (!dbReady) { salvarLS(); return; }
+  try {
+    await db.query(
+      `INSERT INTO tickets (id, user_name, user_cpf, user_email, setor, tipo, prioridade, descricao, status, responsavel, observacoes, historico)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       ON CONFLICT(id) DO UPDATE SET
+         status=$9, prioridade=$7, responsavel=$10, observacoes=$11, historico=$12, updated_at=now()`,
+      [t.id, t.nome, t.cpf||'', t.email||'', t.setor, t.tipo, t.prioridade||'Não definida',
+       t.descricao, t.status, t.responsavel||'',
+       JSON.stringify(t.observacoes||[]), JSON.stringify(t.historico||[])]
+    );
+  } catch(e) { console.error('dbSaveTicket error:', e); }
+}
+
+async function dbDeleteTicket(id) {
+  if (!dbReady) return;
+  try { await db.query('DELETE FROM tickets WHERE id=$1', [id]); } catch(e) { console.error(e); }
+}
+
+async function dbSaveStaff(f) {
+  if (!dbReady) return;
+  try {
+    const email = `${f.usuario}@helpdesk.local`;
+    await db.query(
+      `INSERT INTO support_staff (name, email, role, senha, foto)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT(email) DO UPDATE SET name=$1, role=$3, senha=$4, foto=$5`,
+      [f.nome, email, f.role, f.senha, f.foto||'']
+    );
+  } catch(e) { console.error('dbSaveStaff error:', e); }
+}
+
+async function dbDeleteStaff(usuario) {
+  if (!dbReady) return;
+  try {
+    await db.query('DELETE FROM support_staff WHERE email=$1', [`${usuario}@helpdesk.local`]);
+  } catch(e) { console.error(e); }
+}
+
+async function dbAddNotif(titulo, texto, options = {}) {
+  if (!dbReady) return;
+  try {
+    await db.query(
+      `INSERT INTO notifications (titulo, texto, destinatario, ignorar) VALUES ($1,$2,$3,$4)`,
+      [titulo, texto, options.destinatario||'', options.ignorar||'']
+    );
+    // Keep only last 20
+    await db.query(`DELETE FROM notifications WHERE id NOT IN (SELECT id FROM notifications ORDER BY created_at DESC LIMIT 20)`);
+  } catch(e) { console.error(e); }
+}
+
+async function dbSendChatMsg(chatKey, autor, texto, isStaff = false) {
+  if (!dbReady) return;
+  try {
+    await db.query(
+      `INSERT INTO chat_messages (chat_key, autor, texto, is_staff) VALUES ($1,$2,$3,$4)`,
+      [chatKey, autor, texto, isStaff]
+    );
+  } catch(e) { console.error(e); }
+}
+
+async function dbSaveSuporteChat(cpf, data) {
+  if (!dbReady) return;
+  try {
+    await db.query(
+      `INSERT INTO chats_suporte (cpf, nome, assunto, observacao, responsavel)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT(cpf) DO UPDATE SET responsavel=$5`,
+      [cpf, data.nome, data.assunto||'', data.observacao||'', data.responsavel||'']
+    );
+  } catch(e) { console.error(e); }
+}
+
+async function dbDeleteSuporteChat(cpf) {
+  if (!dbReady) return;
+  try {
+    await db.query('UPDATE chats_suporte SET encerrado=true WHERE cpf=$1', [cpf]);
+    await db.query(`DELETE FROM chat_messages WHERE chat_key=$1`, [`SUPORTE_${cpf}`]);
+  } catch(e) { console.error(e); }
+}
+
+// localStorage fallback
+function loadFromLocalStorage() {
+  chamados = JSON.parse(localStorage.getItem('hd_chamados') || '[]');
+  notificacoes = JSON.parse(localStorage.getItem('hd_notifs') || '[]');
+  chatsData = JSON.parse(localStorage.getItem('hd_chats') || '{}');
+  chatInternoMsgs = JSON.parse(localStorage.getItem('hd_chat_interno') || '[]');
+  directMsgs = JSON.parse(localStorage.getItem('hd_dms') || '{}');
+
+  let stored = JSON.parse(localStorage.getItem('hd_funcionarios'));
+  if (!stored || stored.length === 0) {
+    FUNCIONARIOS = [...defaultFuncionarios];
+    localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
+  } else {
+    FUNCIONARIOS = stored;
+    let changed = false;
+    defaultFuncionarios.forEach(df => {
+      const ex = FUNCIONARIOS.find(f => f.usuario.toLowerCase() === df.usuario.toLowerCase());
+      if (!ex) { FUNCIONARIOS.push(df); changed = true; }
+      else if (df.foto && ex.foto !== df.foto) { ex.foto = df.foto; changed = true; }
+    });
+    if (changed) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
+  }
+}
+
+function salvarLS() {
   localStorage.setItem('hd_chamados', JSON.stringify(chamados));
   localStorage.setItem('hd_notifs', JSON.stringify(notificacoes));
 }
 
+// ─── App State ────────────────────────────────────────────────────────────────
+let chamados = [];
+let notificacoes = [];
+let chatsData = {};
+let chatInternoMsgs = [];
+let directMsgs = {};
+let logado = false;
+let chartInstances = {};
+let funcLogado = null;
+let painelTab = 'meus';
+let chatActiveCpf = null;
+let chatMode = null;
+let typingBots = new Set();
+let chatInternoActive = 'GERAL';
+let lastReadTime = {};
+let editandoUsuario = null;
+let selectedProblem = '';
+let FUNCIONARIOS = [];
+
+const defaultFuncionarios = [
+  { usuario: 'ariel',    senha: '123', nome: 'Ariel',   role: 'Gerente', foto: 'ariel.jpeg'   },
+  { usuario: 'kevin',    senha: '123', nome: 'Kevin',   role: 'Gerente', foto: 'kevin.jpeg'   },
+  { usuario: 'gustavo',  senha: '123', nome: 'Gustavo', role: 'Gerente', foto: 'gustavo.jpeg' },
+  { usuario: 'heloisa',  senha: '123', nome: 'Heloisa', role: 'Gerente', foto: 'helo.jpeg'    },
+  { usuario: 'fofinho',  senha: '123', nome: 'Gabriel', role: 'Gerente', foto: 'gabriel.jpeg' },
+  { usuario: 'sarrinho', senha: '123', nome: 'Pedro',   role: 'Gerente', foto: 'pedro.jpeg'   },
+];
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
 function gerarId() {
   const n = (chamados.length + 1).toString().padStart(4, '0');
   return `#HD-${n}`;
@@ -67,16 +362,17 @@ function toast(tipo, titulo, msg) {
   }, 3800);
 }
 
-function addNotif(titulo, texto, options = {}) {
+async function addNotif(titulo, texto, options = {}) {
   notificacoes.unshift({ titulo, texto, data: new Date().toISOString(), ...options });
   if (notificacoes.length > 20) notificacoes.pop();
-  salvar();
+  await dbAddNotif(titulo, texto, options);
+  if (!dbReady) salvarLS();
   renderNotifs();
 }
 
 function renderNotifs() {
-  const badge  = document.getElementById('notifBadge');
-  const list   = document.getElementById('notifList');
+  const badge = document.getElementById('notifBadge');
+  const list  = document.getElementById('notifList');
 
   let myNotifs = notificacoes;
   if (logado && funcLogado) {
@@ -89,8 +385,7 @@ function renderNotifs() {
     myNotifs = notificacoes.filter(n => !n.destinatario && !n.ignorar);
   }
 
-  const qtd    = myNotifs.length;
-
+  const qtd = myNotifs.length;
   badge.textContent = qtd > 9 ? '9+' : qtd;
   badge.style.display = qtd > 0 ? 'flex' : 'none';
 
@@ -105,13 +400,13 @@ function renderNotifs() {
     </div>`).join('');
 }
 
+// ─── Navigation ───────────────────────────────────────────────────────────────
 function irPara(pagina) {
   if ((pagina === 'equipe' || pagina === 'relatorios' || pagina === 'chat') && !logado) {
     toast('error', 'Acesso Restrito', 'Faça login para acessar esta página.');
     irPara('painel');
     return;
   }
-
   if (pagina === 'equipe' && funcLogado && funcLogado.usuario !== 'admin' && !funcLogado.role.toLowerCase().includes('gerente')) {
     toast('error', 'Sem Permissão', 'Acesso restrito a gestores e administradores.');
     irPara('home');
@@ -128,21 +423,21 @@ function irPara(pagina) {
   if (navEl) navEl.classList.add('active');
 
   document.getElementById('navLinks').classList.remove('mobile-open');
-
   window.scrollTo({ top: 0, behavior: 'smooth' });
 
-  if (pagina === 'home')        atualizarHome();
-  if (pagina === 'meus')        renderMeusChamados();
-  if (pagina === 'painel')      renderPainel();
-  if (pagina === 'relatorios')  renderGraficos();
-  if (pagina === 'equipe')      renderEquipe();
-  if (pagina === 'suporte')     renderSuportePage();
+  if (pagina === 'home')       atualizarHome();
+  if (pagina === 'meus')       renderMeusChamados();
+  if (pagina === 'painel')     renderPainel();
+  if (pagina === 'relatorios') renderGraficos();
+  if (pagina === 'equipe')     renderEquipe();
+  if (pagina === 'suporte')    renderSuportePage();
   if (pagina === 'chat') {
     renderChatInternoList();
     renderChatInterno();
   }
 }
 
+// ─── Home ─────────────────────────────────────────────────────────────────────
 function atualizarHome() {
   const abertos    = chamados.filter(c => c.status === 'Aberto').length;
   const andamento  = chamados.filter(c => c.status === 'Em andamento' || c.status === 'Em análise').length;
@@ -171,23 +466,19 @@ function atualizarHome() {
     row.addEventListener('click', () => abrirModal(row.dataset.id)));
 }
 
+// ─── Ticket helpers ───────────────────────────────────────────────────────────
 function statusClass(s) {
   const map = {
-    'Aberto':              'status-aberto',
-    'Em análise':          'status-em-analise',
-    'Em andamento':        'status-em-andamento',
-    'Aguardando resposta': 'status-aguardando',
-    'Resolvido':           'status-resolvido',
-    'Fechado':             'status-fechado',
+    'Aberto': 'status-aberto', 'Em análise': 'status-em-analise',
+    'Em andamento': 'status-em-andamento', 'Aguardando resposta': 'status-aguardando',
+    'Resolvido': 'status-resolvido', 'Fechado': 'status-fechado',
   };
   return map[s] || 'status-aberto';
 }
-
 function prioClass(p) {
   const map = { Baixa: 'prio-baixa', 'Média': 'prio-media', Alta: 'prio-alta', 'Crítica': 'prio-critica', 'Não definida': 'prio-ndef' };
   return map[p] || 'prio-ndef';
 }
-
 function prioIcon(p) {
   const map = { Baixa: '↓', 'Média': '→', Alta: '↑', 'Crítica': '⬆', 'Não definida': '?' };
   return map[p] || '';
@@ -211,13 +502,11 @@ function ticketRowHTML(c, painelMode) {
     </div>`;
 }
 
-let selectedProblem = '';
-
+// ─── Problem selector ────────────────────────────────────────────────────────
 window.selectProblem = function(el, val) {
   document.querySelectorAll('.problem-option').forEach(o => o.classList.remove('selected'));
   el.classList.add('selected');
   selectedProblem = val;
-
   document.getElementById('err-problema').textContent = '';
   document.getElementById('outro-desc').style.display = val === 'Outro problema' ? 'block' : 'none';
 };
@@ -231,28 +520,22 @@ window.resetChamadoForm = function() {
   selectedProblem = '';
 };
 
+// ─── Auto-assign ─────────────────────────────────────────────────────────────
 function autoAssignTicket(tipo, setorSolicitante) {
   let candidatos = FUNCIONARIOS.filter(f =>
-    f.usuario !== 'admin' &&
-    f.role !== 'Gerente' &&
-    f.role === setorSolicitante
+    f.usuario !== 'admin' && f.role !== 'Gerente' && f.role === setorSolicitante
   );
-
-  if (candidatos.length === 0) {
+  if (candidatos.length === 0)
     candidatos = FUNCIONARIOS.filter(f => f.usuario !== 'admin' && f.role !== 'Gerente');
-  }
-
   if (candidatos.length === 0) return 'Sistema';
 
   const chamadosAbertos = c => c.status !== 'Resolvido' && c.status !== 'Fechado';
   const contagem = cand => chamados.filter(c => c.responsavel === cand.nome && chamadosAbertos(c)).length;
-
-  const escolhido = candidatos.reduce((melhor, atual) => contagem(atual) < contagem(melhor) ? atual : melhor);
-
-  return escolhido.nome;
+  return candidatos.reduce((melhor, atual) => contagem(atual) < contagem(melhor) ? atual : melhor).nome;
 }
 
-document.getElementById('formChamado').addEventListener('submit', function (e) {
+// ─── Form submit (new ticket) ─────────────────────────────────────────────────
+document.getElementById('formChamado').addEventListener('submit', async function(e) {
   e.preventDefault();
   if (!validarForm()) return;
 
@@ -277,23 +560,20 @@ document.getElementById('formChamado').addEventListener('submit', function (e) {
     responsavel: autoAssignTicket(selectedProblem, document.getElementById('fc-setor').value),
     data:        new Date().toISOString(),
     observacoes: [],
+    historico:   [],
   };
 
   const obsAdicionais = document.getElementById('fc-obs').value.trim();
   if (obsAdicionais) {
-    novo.observacoes.push({
-      autor: novo.nome,
-      data: novo.data,
-      texto: obsAdicionais
-    });
+    novo.observacoes.push({ autor: novo.nome, data: novo.data, texto: obsAdicionais });
   }
 
   chamados.push(novo);
-  salvar();
+  await dbSaveTicket(novo);
+  if (!dbReady) salvarLS();
 
-  addNotif(`Chamado ${novo.id} aberto`, `${novo.tipo} · ${novo.setor}`);
+  await addNotif(`Chamado ${novo.id} aberto`, `${novo.tipo} · ${novo.setor}`);
   toast('success', 'Chamado aberto!', `ID: ${novo.id} — ${novo.tipo}`);
-
   resetChamadoForm();
   irPara('meus');
 });
@@ -301,10 +581,10 @@ document.getElementById('formChamado').addEventListener('submit', function (e) {
 function validarForm() {
   let ok = true;
   const campos = [
-    { id: 'fc-nome',      msg: 'Informe seu nome.' },
-    { id: 'fc-cpf',       msg: 'Informe o CPF.' },
-    { id: 'fc-email',     msg: 'Informe um e-mail válido.' },
-    { id: 'fc-setor',     msg: 'Selecione o setor.' },
+    { id: 'fc-nome',  msg: 'Informe seu nome.' },
+    { id: 'fc-cpf',   msg: 'Informe o CPF.' },
+    { id: 'fc-email', msg: 'Informe um e-mail válido.' },
+    { id: 'fc-setor', msg: 'Selecione o setor.' },
   ];
   campos.forEach(({ id, msg }) => {
     const el  = document.getElementById(id);
@@ -319,7 +599,7 @@ function validarForm() {
     }
   });
 
-  const emailEl = document.getElementById('fc-email');
+  const emailEl  = document.getElementById('fc-email');
   const errEmail = document.getElementById('err-email');
   if (emailEl.value && !/\S+@\S+\.\S+/.test(emailEl.value)) {
     emailEl.classList.add('invalid');
@@ -334,7 +614,7 @@ function validarForm() {
     document.getElementById('err-problema').textContent = '';
   }
 
-  const descEl = document.getElementById('fc-desc');
+  const descEl  = document.getElementById('fc-desc');
   const errDesc = document.getElementById('err-outro');
   if (selectedProblem === 'Outro problema' && !descEl.value.trim()) {
     descEl.classList.add('invalid');
@@ -344,30 +624,30 @@ function validarForm() {
     descEl.classList.remove('invalid');
     if (errDesc) errDesc.textContent = '';
   }
-
   return ok;
 }
 
 ['fc-nome','fc-cpf','fc-email','fc-setor','fc-desc'].forEach(id => {
-  document.getElementById(id)?.addEventListener('input', function () {
+  document.getElementById(id)?.addEventListener('input', function() {
     this.classList.remove('invalid');
     const err = document.getElementById(`err-${id.split('-')[1]}`);
     if (err) err.textContent = '';
   });
 });
 
+// ─── Meus Chamados ────────────────────────────────────────────────────────────
 function renderMeusChamados() {
-  const busca   = document.getElementById('searchMeus').value.toLowerCase();
-  const status  = document.getElementById('filterStatus').value;
-  const setor   = document.getElementById('filterSetor').value;
-  const prio    = document.getElementById('filterPrio').value;
+  const busca  = document.getElementById('searchMeus').value.toLowerCase();
+  const status = document.getElementById('filterStatus').value;
+  const setor  = document.getElementById('filterSetor').value;
+  const prio   = document.getElementById('filterPrio').value;
 
   let lista = [...chamados].reverse().filter(c => {
     const texto = `${c.id} ${c.nome} ${c.descricao} ${c.tipo}`.toLowerCase();
-    return (!busca   || texto.includes(busca))
-        && (!status  || c.status === status)
-        && (!setor   || c.setor  === setor)
-        && (!prio    || c.prioridade === prio);
+    return (!busca  || texto.includes(busca))
+        && (!status || c.status === status)
+        && (!setor  || c.setor  === setor)
+        && (!prio   || c.prioridade === prio);
   });
 
   const cont = document.getElementById('meusChamadosList');
@@ -387,34 +667,39 @@ function renderMeusChamados() {
   document.getElementById(id)?.addEventListener('change', renderMeusChamados);
 });
 
-let funcLogado = null;
-
-document.getElementById('formLogin').addEventListener('submit', function (e) {
+// ─── Login ────────────────────────────────────────────────────────────────────
+document.getElementById('formLogin').addEventListener('submit', function(e) {
   e.preventDefault();
   document.getElementById('loginError').textContent = '';
-  
+
   const user = document.getElementById('login-user').value.trim();
   const pass = document.getElementById('login-pass').value;
 
-  const func = FUNCIONARIOS.find(f => f.usuario.toLowerCase() === user.toLowerCase() && f.senha === pass);
+  // admin hardcoded
+  let func = null;
+  if (user === 'admin' && pass === 'admin') {
+    func = { usuario: 'admin', senha: 'admin', nome: 'Administrador', role: 'Admin', foto: '' };
+  } else {
+    func = FUNCIONARIOS.find(f => f.usuario.toLowerCase() === user.toLowerCase() && f.senha === pass);
+  }
 
   if (!func) {
     document.getElementById('loginError').textContent = 'Usuário ou senha inválidos.';
     return;
   }
-
   funcLogado = func;
   logado = true;
   entrarPainel();
 });
 
-document.getElementById('passToggle')?.addEventListener('click', function () {
+document.getElementById('passToggle')?.addEventListener('click', function() {
   const inp = document.getElementById('login-pass');
   inp.type = inp.type === 'password' ? 'text' : 'password';
 });
 
+// ─── Painel ───────────────────────────────────────────────────────────────────
 function entrarPainel() {
-  document.getElementById('painelLogin').style.display    = 'none';
+  document.getElementById('painelLogin').style.display     = 'none';
   document.getElementById('painelDashboard').style.display = 'block';
 
   if (funcLogado.foto) {
@@ -422,8 +707,8 @@ function entrarPainel() {
   } else {
     document.getElementById('empAvatar').textContent = funcLogado.nome[0].toUpperCase();
   }
-  document.getElementById('empName').textContent   = funcLogado.nome;
-  document.getElementById('empRole').textContent   = funcLogado.role;
+  document.getElementById('empName').textContent = funcLogado.nome;
+  document.getElementById('empRole').textContent = funcLogado.role;
 
   document.body.classList.add('is-logged-in');
   if (funcLogado.usuario === 'admin' || funcLogado.role.toLowerCase().includes('gerente')) {
@@ -449,9 +734,9 @@ function atualizarStatsEmp() {
   const total = listaStats.length;
   const conc  = listaStats.filter(c => c.status === 'Resolvido' || c.status === 'Fechado').length;
   const taxa  = total > 0 ? Math.round((conc / total) * 100) : 0;
-  document.getElementById('empTotal').textContent     = total;
+  document.getElementById('empTotal').textContent      = total;
   document.getElementById('empConcluidos').textContent = conc;
-  document.getElementById('empTaxa').textContent      = `${taxa}%`;
+  document.getElementById('empTaxa').textContent       = `${taxa}%`;
 }
 
 document.getElementById('btnLogout')?.addEventListener('click', () => {
@@ -461,30 +746,23 @@ document.getElementById('btnLogout')?.addEventListener('click', () => {
   document.getElementById('painelDashboard').style.display = 'none';
   document.getElementById('login-user').value = '';
   document.getElementById('login-pass').value = '';
-
   document.body.classList.remove('is-logged-in', 'is-admin');
   renderNotifs();
   const activePage = document.querySelector('.page.active')?.id;
-  if (activePage === 'page-equipe' || activePage === 'page-relatorios' || activePage === 'page-suporte' || activePage === 'page-chat') {
-    irPara('home');
-  }
+  if (['page-equipe','page-relatorios','page-suporte','page-chat'].includes(activePage)) irPara('home');
 });
-
-let painelTab = 'meus';
 
 document.getElementById('tabMeusAtend')?.addEventListener('click', (e) => {
   painelTab = 'meus';
   e.target.classList.add('active');
   document.getElementById('tabTodosAtend').classList.remove('active');
-  atualizarStatsEmp();
-  renderPainelLista();
+  atualizarStatsEmp(); renderPainelLista();
 });
 document.getElementById('tabTodosAtend')?.addEventListener('click', (e) => {
   painelTab = 'todos';
   e.target.classList.add('active');
   document.getElementById('tabMeusAtend').classList.remove('active');
-  atualizarStatsEmp();
-  renderPainelLista();
+  atualizarStatsEmp(); renderPainelLista();
 });
 
 function renderPainel() {
@@ -501,7 +779,6 @@ function renderPainelLista() {
   let lista = [...chamados].reverse().filter(c => {
     const isMine = c.responsavel === funcLogado.nome;
     if (painelTab === 'meus' && !isMine) return false;
-
     const texto = `${c.id} ${c.nome} ${c.descricao} ${c.tipo}`.toLowerCase();
     return (!busca  || texto.includes(busca))
         && (!status || c.status === status)
@@ -523,18 +800,18 @@ function renderPainelLista() {
   document.getElementById(id)?.addEventListener('change', renderPainelLista);
 });
 
+// ─── Modal ────────────────────────────────────────────────────────────────────
 function abrirModal(id, isPainel = false) {
   const c = chamados.find(x => x.id === id);
   if (!c) return;
 
   const isAdmin = funcLogado && (funcLogado.usuario === 'admin' || funcLogado.role.toLowerCase().includes('gerente'));
-
   document.getElementById('modalTitle').textContent = `Chamado ${c.id}`;
 
   document.getElementById('modalBody').innerHTML = `
     <div class="modal-meta-grid">
       <div class="modal-field"><label>Solicitante</label><p>${c.nome}</p></div>
-      <div class="modal-field"><label>CPF</label><p>${c.cpf || c.matricula || '—'}</p></div>
+      <div class="modal-field"><label>CPF</label><p>${c.cpf || '—'}</p></div>
       <div class="modal-field"><label>E-mail</label><p>${c.email}</p></div>
       <div class="modal-field"><label>Setor</label><p>${c.setor}</p></div>
       <div class="modal-field"><label>Tipo</label><p>${c.tipo}</p></div>
@@ -562,9 +839,9 @@ function abrirModal(id, isPainel = false) {
       <div class="modal-section-title">Histórico de Alterações</div>
       <div class="obs-list">
         ${c.historico.map(h => `
-          <div class="obs-item" style="background: transparent; border: 1px dashed var(--border); padding: 0.75rem;">
+          <div class="obs-item" style="background:transparent;border:1px dashed var(--border);padding:.75rem;">
             <div class="obs-meta">${h.autor} · ${dataFormatada(h.data)}</div>
-            <p style="font-size: 0.85rem; color: var(--text-2); margin-top: 0.25rem;">${h.mensagem}</p>
+            <p style="font-size:.85rem;color:var(--text-2);margin-top:.25rem;">${h.mensagem}</p>
           </div>`).join('')}
       </div>` : ''}
     ${isPainel && logado ? `
@@ -572,20 +849,14 @@ function abrirModal(id, isPainel = false) {
       <div class="modal-action-row">
         <select id="modalNovoStatus">
           <option value="">Alterar status…</option>
-          <option>Aberto</option>
-          <option>Em análise</option>
-          <option>Em andamento</option>
-          <option>Aguardando resposta</option>
-          <option>Resolvido</option>
-          <option>Fechado</option>
+          <option>Aberto</option><option>Em análise</option><option>Em andamento</option>
+          <option>Aguardando resposta</option><option>Resolvido</option><option>Fechado</option>
         </select>
         ${isAdmin ? `
         <select id="modalPrioridade">
           <option value="">Alterar prioridade…</option>
-          <option value="Baixa">Baixa</option>
-          <option value="Média">Média</option>
-          <option value="Alta">Alta</option>
-          <option value="Crítica">Crítica</option>
+          <option value="Baixa">Baixa</option><option value="Média">Média</option>
+          <option value="Alta">Alta</option><option value="Crítica">Crítica</option>
         </select>
         <select id="modalResponsavel">
           <option value="">Atribuir responsável…</option>
@@ -600,24 +871,21 @@ function abrirModal(id, isPainel = false) {
   const foot = document.getElementById('modalFoot');
   if (isPainel && logado) {
     foot.innerHTML = `
-      ${isAdmin ? `<button class="btn-ghost" id="modalExcluir" style="color: var(--red); border-color: var(--red);">Excluir Chamado</button><div style="flex:1"></div>` : ''}
+      ${isAdmin ? `<button class="btn-ghost" id="modalExcluir" style="color:var(--red);border-color:var(--red);">Excluir Chamado</button><div style="flex:1"></div>` : ''}
       <button class="btn-ghost" id="modalCancelar">Fechar</button>
       <button class="btn-primary" id="modalSalvar">Salvar Alterações</button>`;
     document.getElementById('modalSalvar').addEventListener('click', () => salvarModal(c.id));
     document.getElementById('modalCancelar').addEventListener('click', fecharModal);
-    if (isAdmin) {
-      document.getElementById('modalExcluir').addEventListener('click', () => excluirChamado(c.id));
-    }
+    if (isAdmin) document.getElementById('modalExcluir').addEventListener('click', () => excluirChamado(c.id));
   } else {
     foot.innerHTML = `<button class="btn-ghost" id="modalFechar">Fechar</button>`;
     document.getElementById('modalFechar').addEventListener('click', fecharModal);
   }
-
   document.getElementById('modalOverlay').classList.add('open');
 }
 
-function salvarModal(id) {
-  const idx     = chamados.findIndex(c => c.id === id);
+async function salvarModal(id) {
+  const idx = chamados.findIndex(c => c.id === id);
   if (idx === -1) return;
 
   const novoStatus = document.getElementById('modalNovoStatus')?.value;
@@ -629,27 +897,24 @@ function salvarModal(id) {
   if (resp)       chamados[idx].responsavel = resp;
   if (novaPrio)   chamados[idx].prioridade = novaPrio;
   if (obs) {
-    chamados[idx].observacoes.push({
-      autor: funcLogado?.nome || 'Sistema',
-      data:  new Date().toISOString(),
-      texto: obs,
-    });
+    chamados[idx].observacoes.push({ autor: funcLogado?.nome || 'Sistema', data: new Date().toISOString(), texto: obs });
   }
 
-  salvar();
-  addNotif(`Chamado ${id} atualizado`, novoStatus ? `Status: ${novoStatus}` : 'Observação adicionada');
+  await dbSaveTicket(chamados[idx]);
+  if (!dbReady) salvarLS();
+
+  await addNotif(`Chamado ${id} atualizado`, novoStatus ? `Status: ${novoStatus}` : 'Observação adicionada');
   toast('info', `Chamado ${id} atualizado`, novoStatus ? `Novo status: ${novoStatus}` : '');
   fecharModal();
   renderPainelLista();
   atualizarHome();
 }
 
-window.excluirChamado = function(id) {
+window.excluirChamado = async function(id) {
   if (!confirm('Tem certeza que deseja excluir permanentemente este chamado?')) return;
-  
   chamados = chamados.filter(c => c.id !== id);
-  salvar();
-  
+  await dbDeleteTicket(id);
+  if (!dbReady) salvarLS();
   toast('info', 'Chamado excluído', `O chamado ${id} foi removido do sistema.`);
   fecharModal();
   atualizarStatsEmp();
@@ -657,17 +922,13 @@ window.excluirChamado = function(id) {
   atualizarHome();
 };
 
-function fecharModal() {
-  document.getElementById('modalOverlay').classList.remove('open');
-}
-
+function fecharModal() { document.getElementById('modalOverlay').classList.remove('open'); }
 document.getElementById('modalClose').addEventListener('click', fecharModal);
-document.getElementById('modalOverlay').addEventListener('click', function (e) {
+document.getElementById('modalOverlay').addEventListener('click', function(e) {
   if (e.target === this) fecharModal();
 });
 
-let editandoUsuario = null;
-
+// ─── Equipe ───────────────────────────────────────────────────────────────────
 function renderEquipe() {
   const cont = document.getElementById('equipeList');
   if (!cont) return;
@@ -675,8 +936,7 @@ function renderEquipe() {
     <div class="equipe-card">
       <div class="eq-av">${f.foto
         ? `<img src="${f.foto}" alt="${f.nome}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" onerror="this.style.display='none';this.parentNode.textContent='${f.nome[0].toUpperCase()}'">`
-        : f.nome[0].toUpperCase()
-      }</div>
+        : f.nome[0].toUpperCase()}</div>
       <div class="eq-info">
         <div class="eq-name">${f.nome}</div>
         <div class="eq-role">${f.role}</div>
@@ -689,8 +949,7 @@ function renderEquipe() {
         ${f.usuario !== 'admin' ? `
         <button class="eq-del" onclick="removerFuncionario('${f.usuario}')" title="Remover Funcionário">
           <i class="ti ti-trash"></i>
-        </button>
-        ` : ''}
+        </button>` : ''}
       </div>
     </div>
   `).join('');
@@ -699,17 +958,14 @@ function renderEquipe() {
 window.editarFuncionario = function(usuario) {
   const func = FUNCIONARIOS.find(f => f.usuario === usuario);
   if (!func) return;
-  
   editandoUsuario = usuario;
-  document.getElementById('eq-nome').value = func.nome;
+  document.getElementById('eq-nome').value  = func.nome;
   document.getElementById('eq-cargo').value = func.role;
-  document.getElementById('eq-user').value = func.usuario;
-  document.getElementById('eq-pass').value = func.senha;
-  
+  document.getElementById('eq-user').value  = func.usuario;
+  document.getElementById('eq-pass').value  = func.senha;
   document.getElementById('formEquipeTitle').textContent = 'Editar Funcionário';
   document.getElementById('btnSubmitEquipe').textContent = 'Salvar Alterações';
   document.getElementById('btnCancelEdit').style.display = 'inline-flex';
-  
   window.scrollTo({ top: 0, behavior: 'smooth' });
 };
 
@@ -721,48 +977,36 @@ window.cancelarEdicao = function() {
   document.getElementById('btnCancelEdit').style.display = 'none';
 };
 
-window.removerFuncionario = function(usuario) {
-  if (usuario === 'admin') {
-    toast('error', 'Ação negada', 'O administrador principal não pode ser removido.');
-    return;
-  }
+window.removerFuncionario = async function(usuario) {
+  if (usuario === 'admin') return toast('error', 'Ação negada', 'O administrador principal não pode ser removido.');
   if (!confirm(`Tem certeza que deseja remover o usuário ${usuario}?`)) return;
-  
   if (editandoUsuario === usuario) cancelarEdicao();
 
   const funcObj = FUNCIONARIOS.find(f => f.usuario === usuario);
-
   FUNCIONARIOS = FUNCIONARIOS.filter(f => f.usuario !== usuario);
-  localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
+  await dbDeleteStaff(usuario);
+  if (!dbReady) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
 
   if (funcObj) {
     let reatribuidos = 0;
-    chamados.forEach(c => {
+    for (const c of chamados) {
       if (c.responsavel === funcObj.nome && c.status !== 'Resolvido' && c.status !== 'Fechado') {
         const novoResp = autoAssignTicket(c.tipo, c.setor);
         if (!c.historico) c.historico = [];
-        c.historico.push({
-          autor: 'Sistema',
-          data: new Date().toISOString(),
-          mensagem: `Responsável anterior (${funcObj.nome}) removido. Chamado reatribuído para ${novoResp}.`
-        });
+        c.historico.push({ autor: 'Sistema', data: new Date().toISOString(), mensagem: `Responsável anterior (${funcObj.nome}) removido. Chamado reatribuído para ${novoResp}.` });
+        c.observacoes.push({ autor: 'Sistema', data: new Date().toISOString(), texto: `O responsável anterior (${funcObj.nome}) foi removido. Chamado reatribuído automaticamente para ${novoResp}.` });
         c.responsavel = novoResp;
-        c.observacoes.push({
-          autor: 'Sistema',
-          data: new Date().toISOString(),
-          texto: `O responsável anterior (${funcObj.nome}) foi removido do sistema. Chamado reatribuído automaticamente para ${novoResp}.`
-        });
+        await dbSaveTicket(c);
         reatribuidos++;
       }
-    });
-    if (reatribuidos > 0) salvar();
+    }
+    if (reatribuidos > 0 && !dbReady) salvarLS();
   }
-
   renderEquipe();
   toast('info', 'Removido', `O usuário ${usuario} foi excluído.`);
 };
 
-document.getElementById('formEquipe')?.addEventListener('submit', function(e) {
+document.getElementById('formEquipe')?.addEventListener('submit', async function(e) {
   e.preventDefault();
   const nome  = document.getElementById('eq-nome').value.trim();
   const cargo = document.getElementById('eq-cargo').value.trim();
@@ -772,53 +1016,49 @@ document.getElementById('formEquipe')?.addEventListener('submit', function(e) {
   if (!nome || !cargo || !user || !pass) return toast('error', 'Atenção', 'Preencha todos os campos do formulário.');
 
   if (editandoUsuario) {
-    if (editandoUsuario === 'admin' && user !== 'admin') {
+    if (editandoUsuario === 'admin' && user !== 'admin')
       return toast('error', 'Ação negada', 'O login do administrador principal não pode ser alterado.');
-    }
-    if (user.toLowerCase() !== editandoUsuario.toLowerCase() && FUNCIONARIOS.some(f => f.usuario.toLowerCase() === user.toLowerCase())) {
+    if (user.toLowerCase() !== editandoUsuario.toLowerCase() && FUNCIONARIOS.some(f => f.usuario.toLowerCase() === user.toLowerCase()))
       return toast('error', 'Usuário indisponível', 'Já existe outro funcionário com este login.');
-    }
+
     const idx = FUNCIONARIOS.findIndex(f => f.usuario === editandoUsuario);
     if (idx !== -1) {
-      FUNCIONARIOS[idx] = { usuario: user, senha: pass, nome, role: cargo };
-      localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
+      // If username changed, delete old record
+      if (user.toLowerCase() !== editandoUsuario.toLowerCase()) {
+        await dbDeleteStaff(editandoUsuario);
+      }
+      FUNCIONARIOS[idx] = { usuario: user, senha: pass, nome, role: cargo, foto: FUNCIONARIOS[idx].foto || '' };
+      await dbSaveStaff(FUNCIONARIOS[idx]);
+      if (!dbReady) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
       toast('success', 'Sucesso', 'Funcionário atualizado com sucesso!');
-      
       if (funcLogado && funcLogado.usuario === editandoUsuario) {
         funcLogado = FUNCIONARIOS[idx];
-        document.getElementById('empAvatar').innerHTML = `<img src="${funcLogado.nome}/${funcLogado.nome}.jpg" alt="${funcLogado.nome}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" onerror="if(!this.dataset.tried){this.dataset.tried=true;this.src='${funcLogado.nome}.jpg';}else{this.parentNode.textContent='${funcLogado.nome[0].toUpperCase()}';}">`;
-        document.getElementById('empName').textContent   = funcLogado.nome;
-        document.getElementById('empRole').textContent   = funcLogado.role;
-        if (funcLogado.usuario === 'admin' || funcLogado.role.toLowerCase().includes('gerente')) {
+        document.getElementById('empName').textContent = funcLogado.nome;
+        document.getElementById('empRole').textContent = funcLogado.role;
+        if (funcLogado.usuario === 'admin' || funcLogado.role.toLowerCase().includes('gerente'))
           document.body.classList.add('is-admin');
-        } else {
-          document.body.classList.remove('is-admin');
-        }
+        else document.body.classList.remove('is-admin');
       }
     }
     cancelarEdicao();
   } else {
-    if (FUNCIONARIOS.some(f => f.usuario.toLowerCase() === user.toLowerCase())) return toast('error', 'Usuário indisponível', 'Já existe um funcionário com este login.');
-    FUNCIONARIOS.push({ usuario: user, senha: pass, nome, role: cargo });
-    localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
+    if (FUNCIONARIOS.some(f => f.usuario.toLowerCase() === user.toLowerCase()))
+      return toast('error', 'Usuário indisponível', 'Já existe um funcionário com este login.');
+    const novoFunc = { usuario: user, senha: pass, nome, role: cargo, foto: '' };
+    FUNCIONARIOS.push(novoFunc);
+    await dbSaveStaff(novoFunc);
+    if (!dbReady) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
     toast('success', 'Sucesso', 'Funcionário cadastrado com sucesso!');
     this.reset();
   }
   renderEquipe();
 });
 
-let chatsData = JSON.parse(localStorage.getItem('hd_chats') || '{}');
-let chatActiveCpf = null;
-let chatMode = null;
-let typingBots = new Set();
-
+// ─── Suporte / Chat Clientes ──────────────────────────────────────────────────
 function autoAssignChat(assunto) {
   let candidatos = FUNCIONARIOS.filter(f => f.usuario !== 'admin' && f.role !== 'Gerente' && f.role === assunto);
-  if (candidatos.length === 0) {
-    candidatos = FUNCIONARIOS.filter(f => f.usuario !== 'admin' && f.role !== 'Gerente');
-  }
+  if (candidatos.length === 0) candidatos = FUNCIONARIOS.filter(f => f.usuario !== 'admin' && f.role !== 'Gerente');
   if (candidatos.length === 0) return null;
-  
   const contagem = cand => Object.values(chatsData).filter(c => c.responsavel === cand.usuario).length;
   return candidatos.reduce((melhor, atual) => contagem(atual) < contagem(melhor) ? atual : melhor);
 }
@@ -835,7 +1075,7 @@ function renderSuportePage() {
     else {
       document.getElementById('chatActiveUser').textContent = 'Selecione uma conversa';
       document.getElementById('chatInputArea').style.display = 'none';
-      document.getElementById('chatMessages').innerHTML = '<div class="empty-state" style="padding: 2rem; opacity: 0.7;">Selecione uma conversa para responder.</div>';
+      document.getElementById('chatMessages').innerHTML = '<div class="empty-state" style="padding:2rem;opacity:.7;">Selecione uma conversa para responder.</div>';
     }
   } else {
     chatMode = 'client';
@@ -852,58 +1092,47 @@ function renderSuportePage() {
   }
 }
 
-window.iniciarChatCliente = function() {
-  const cpf = document.getElementById('chatCpf').value.trim();
-  const nome = document.getElementById('chatNome').value.trim();
+window.iniciarChatCliente = async function() {
+  const cpf    = document.getElementById('chatCpf').value.trim();
+  const nome   = document.getElementById('chatNome').value.trim();
   const duvida = document.getElementById('chatDuvida')?.value;
-  const obs = document.getElementById('chatObs')?.value.trim();
-  
+  const obs    = document.getElementById('chatObs')?.value.trim();
+
   if (!cpf || !nome || !duvida) return toast('error', 'Atenção', 'Preencha Nome, CPF e selecione o assunto.');
-  
-  if (chatsData[cpf] && chatsData[cpf].nome.toLowerCase() !== nome.toLowerCase()) {
+  if (chatsData[cpf] && chatsData[cpf].nome.toLowerCase() !== nome.toLowerCase())
     return toast('error', 'Acesso Negado', 'Este CPF já está associado a outro nome no atendimento.');
-  }
 
   chatActiveCpf = cpf;
   let isNew = false;
   if (!chatsData[cpf]) {
-    chatsData[cpf] = { nome: nome, assunto: duvida, observacao: obs, mensagens: [] };
+    chatsData[cpf] = { nome, assunto: duvida, observacao: obs, mensagens: [] };
     isNew = true;
     typingBots.add(cpf);
+    await dbSaveSuporteChat(cpf, chatsData[cpf]);
   }
-  
-  localStorage.setItem('hd_chats', JSON.stringify(chatsData));
+
   renderSuportePage();
 
   if (isNew) {
     if (obs) {
-      chatsData[cpf].mensagens.push({
-        autor: nome,
-        texto: obs,
-        isStaff: false,
-        data: new Date().toISOString()
-      });
+      chatsData[cpf].mensagens.push({ autor: nome, texto: obs, isStaff: false, data: new Date().toISOString() });
+      await dbSendChatMsg(`SUPORTE_${cpf}`, nome, obs, false);
     }
-    
-    setTimeout(() => {
+    setTimeout(async () => {
       typingBots.delete(cpf);
       if (chatsData[cpf]) {
         const resp = autoAssignChat(duvida);
-        chatsData[cpf].mensagens.push({
-          autor: 'Bot',
-          texto: `Sua dúvida sobre "${duvida}" foi registrada. Aguarde uns instantes, um de nossos atendentes irá lhe ajudar.`,
-          isStaff: true,
-          data: new Date().toISOString()
-        });
-        
+        const botMsg = `Sua dúvida sobre "${duvida}" foi registrada. Aguarde uns instantes, um de nossos atendentes irá lhe ajudar.`;
+        chatsData[cpf].mensagens.push({ autor: 'Bot', texto: botMsg, isStaff: true, data: new Date().toISOString() });
+        await dbSendChatMsg(`SUPORTE_${cpf}`, 'Bot', botMsg, true);
+
         if (resp) {
           chatsData[cpf].responsavel = resp.usuario;
-          addNotif('Novo Atendimento', `O cliente ${nome} iniciou um chat sobre ${duvida}.`, { destinatario: resp.usuario });
+          await dbSaveSuporteChat(cpf, chatsData[cpf]);
+          await addNotif('Novo Atendimento', `O cliente ${nome} iniciou um chat sobre ${duvida}.`, { destinatario: resp.usuario });
         } else {
-          addNotif('Novo Atendimento', `O cliente ${nome} iniciou um chat sobre ${duvida}.`);
+          await addNotif('Novo Atendimento', `O cliente ${nome} iniciou um chat sobre ${duvida}.`);
         }
-        
-        localStorage.setItem('hd_chats', JSON.stringify(chatsData));
         if (chatActiveCpf === cpf) renderChatMsgs(cpf);
       }
     }, 850);
@@ -922,22 +1151,18 @@ window.sairChatCliente = function() {
 function renderChatList() {
   const list = document.getElementById('chatList');
   let cpfs = Object.keys(chatsData).reverse();
-  
   const isAdmin = funcLogado && (funcLogado.usuario === 'admin' || funcLogado.role.toLowerCase().includes('gerente'));
-  if (!isAdmin) {
-    cpfs = cpfs.filter(c => chatsData[c].responsavel === funcLogado.usuario);
-  }
-  
+  if (!isAdmin) cpfs = cpfs.filter(c => chatsData[c].responsavel === funcLogado.usuario);
+
   if (cpfs.length === 0) return list.innerHTML = '<div style="padding:1.5rem;color:var(--text-3);font-size:.85rem;text-align:center;">Nenhum chat ativo.</div>';
-  
+
   list.innerHTML = cpfs.map(c => {
     let respNome = '';
     if (isAdmin && chatsData[c].responsavel) {
       const f = FUNCIONARIOS.find(x => x.usuario === chatsData[c].responsavel);
-      if (f) respNome = ` <span style="font-size:0.75rem; opacity:0.7">(${f.nome})</span>`;
+      if (f) respNome = ` <span style="font-size:.75rem;opacity:.7">(${f.nome})</span>`;
     }
-    return `
-    <div class="chat-list-item ${c === chatActiveCpf ? 'active' : ''}" onclick="selectChatAdmin('${c}')">
+    return `<div class="chat-list-item ${c === chatActiveCpf ? 'active' : ''}" onclick="selectChatAdmin('${c}')">
       <div class="cli-name">${chatsData[c].nome}${respNome}</div>
       <div class="cli-cpf">${c} ${chatsData[c].assunto ? '· ' + chatsData[c].assunto : ''}</div>
     </div>`;
@@ -951,18 +1176,19 @@ window.selectChatAdmin = function(cpf) {
 };
 
 function renderChatMsgs(cpf) {
-  document.getElementById('chatActiveUser').textContent = cpf === 'CHAT_INTERNO' ? '💬 Chat da Equipe (Interno)' : (chatMode === 'admin' ? `Atendimento: ${chatsData[cpf].nome}` : 'Suporte Direto (Gerência)');
+  document.getElementById('chatActiveUser').textContent = chatMode === 'admin'
+    ? `Atendimento: ${chatsData[cpf].nome}` : 'Suporte Direto (Gerência)';
   document.getElementById('chatInputArea').style.display = 'flex';
   const msgs = chatsData[cpf].mensagens;
   const container = document.getElementById('chatMessages');
-  
+
   const transferArea = document.getElementById('chatTransferArea');
   if (transferArea) {
     if (chatMode === 'admin' && cpf !== 'CHAT_INTERNO') {
       transferArea.style.display = 'flex';
       const sel = document.getElementById('chatTransferUser');
       if (sel && FUNCIONARIOS) {
-        sel.innerHTML = '<option value="">Encaminhar para...</option>' + 
+        sel.innerHTML = '<option value="">Encaminhar para...</option>' +
           FUNCIONARIOS.filter(f => f.usuario !== funcLogado.usuario).map(f => `<option value="${f.usuario}">${f.nome} (${f.role})</option>`).join('');
       }
     } else {
@@ -973,64 +1199,50 @@ function renderChatMsgs(cpf) {
   const btnEncerrar = document.getElementById('btnEncerrarChatAdmin');
   if (btnEncerrar) {
     const isAdmin = funcLogado && (funcLogado.usuario === 'admin' || funcLogado.role.toLowerCase().includes('gerente'));
-    if (chatMode === 'admin' && cpf !== 'CHAT_INTERNO' && isAdmin) {
-      btnEncerrar.style.display = 'inline-flex';
-    } else {
-      btnEncerrar.style.display = 'none';
-    }
+    btnEncerrar.style.display = (chatMode === 'admin' && isAdmin) ? 'inline-flex' : 'none';
   }
 
-  let html = '';
   if (msgs.length === 0 && !typingBots.has(cpf)) {
-    html = '<div style="text-align:center;color:var(--text-3);font-size:.85rem;margin-top:2rem;">Envie sua primeira mensagem.</div>';
+    container.innerHTML = '<div style="text-align:center;color:var(--text-3);font-size:.85rem;margin-top:2rem;">Envie sua primeira mensagem.</div>';
   } else {
-    html = msgs.map(m => {
+    let html = msgs.map(m => {
       if (m.autor === 'Sistema') {
-        return `<div style="text-align:center; margin: 1rem 0; font-size: 0.8rem; color: var(--text-2); display: flex; justify-content: center;"><div style="background: var(--bg-hover); padding: 0.4rem 1rem; border-radius: 12px; border: 1px dashed var(--border);">${m.texto} <span style="font-size: 0.7rem; opacity: 0.7; margin-left: 0.5rem;">${dataFormatada(m.data)}</span></div></div>`;
+        return `<div style="text-align:center;margin:1rem 0;font-size:.8rem;color:var(--text-2);display:flex;justify-content:center;"><div style="background:var(--bg-hover);padding:.4rem 1rem;border-radius:12px;border:1px dashed var(--border);">${m.texto} <span style="font-size:.7rem;opacity:.7;margin-left:.5rem;">${dataFormatada(m.data)}</span></div></div>`;
       }
-      let isMe = false;
-      if (cpf === 'CHAT_INTERNO') {
-        isMe = m.autor === funcLogado.nome;
-      } else {
-        isMe = (chatMode === 'admin' && m.isStaff) || (chatMode === 'client' && !m.isStaff);
-      }
-      return `<div class="chat-msg ${isMe ? 'me' : 'other'}"><div class="chat-bubble">${m.texto.replace(/\n/g, '<br/>')}</div><div class="chat-meta">${m.autor} · ${dataFormatada(m.data)}</div></div>`;
+      const isMe = (chatMode === 'admin' && m.isStaff) || (chatMode === 'client' && !m.isStaff);
+      return `<div class="chat-msg ${isMe ? 'me' : 'other'}"><div class="chat-bubble">${m.texto.replace(/\n/g,'<br/>')}</div><div class="chat-meta">${m.autor} · ${dataFormatada(m.data)}</div></div>`;
     }).join('');
-    
     if (typingBots.has(cpf)) {
-      html += `<div class="chat-msg other typing-indicator">
-        <div class="chat-bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
-        <div class="chat-meta">Bot · digitando...</div>
-      </div>`;
+      html += `<div class="chat-msg other typing-indicator"><div class="chat-bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div><div class="chat-meta">Bot · digitando...</div></div>`;
     }
+    container.innerHTML = html;
   }
-  container.innerHTML = html;
   container.scrollTop = container.scrollHeight;
 }
 
-window.enviarMsgChat = function() {
+window.enviarMsgChat = async function() {
   if (!chatActiveCpf) return;
-  const inp = document.getElementById('chatInput');
+  const inp   = document.getElementById('chatInput');
   const texto = inp.value.trim();
   if (!texto) return;
-  
+
   const isStaff = chatMode === 'admin';
-  const autor = isStaff ? funcLogado.nome : chatsData[chatActiveCpf].nome;
-  
+  const autor   = isStaff ? funcLogado.nome : chatsData[chatActiveCpf].nome;
+
   chatsData[chatActiveCpf].mensagens.push({ autor, texto, isStaff, data: new Date().toISOString() });
-  localStorage.setItem('hd_chats', JSON.stringify(chatsData));
+  await dbSendChatMsg(`SUPORTE_${chatActiveCpf}`, autor, texto, isStaff);
   inp.value = '';
   renderChatMsgs(chatActiveCpf);
-  
+
   if (chatMode === 'client') {
     toast('success', 'Enviado', 'Mensagem enviada à gerência.');
-    addNotif('Nova Mensagem (Suporte)', `De: ${autor}`);
+    await addNotif('Nova Mensagem (Suporte)', `De: ${autor}`);
   }
 };
 
-window.transferirChatCliente = function() {
-  if (!chatActiveCpf || chatActiveCpf === 'CHAT_INTERNO') return;
-  const sel = document.getElementById('chatTransferUser');
+window.transferirChatCliente = async function() {
+  if (!chatActiveCpf) return;
+  const sel          = document.getElementById('chatTransferUser');
   const targetUserId = sel.value;
   if (!targetUserId) return toast('info', 'Atenção', 'Selecione um funcionário para encaminhar o atendimento.');
 
@@ -1038,49 +1250,41 @@ window.transferirChatCliente = function() {
   if (!targetUser) return;
 
   chatsData[chatActiveCpf].responsavel = targetUser.usuario;
-  chatsData[chatActiveCpf].mensagens.push({
-    autor: 'Sistema',
-    texto: `Atendimento encaminhado de ${funcLogado.nome} para ${targetUser.nome}.`,
-    isStaff: true,
-    data: new Date().toISOString()
-  });
+  const sysMsg = `Atendimento encaminhado de ${funcLogado.nome} para ${targetUser.nome}.`;
+  chatsData[chatActiveCpf].mensagens.push({ autor: 'Sistema', texto: sysMsg, isStaff: true, data: new Date().toISOString() });
 
-  localStorage.setItem('hd_chats', JSON.stringify(chatsData));
-  
-  addNotif('Atendimento Encaminhado', `O cliente ${chatsData[chatActiveCpf].nome} foi repassado para você.`, { destinatario: targetUser.usuario });
+  await dbSaveSuporteChat(chatActiveCpf, chatsData[chatActiveCpf]);
+  await dbSendChatMsg(`SUPORTE_${chatActiveCpf}`, 'Sistema', sysMsg, true);
+  await addNotif('Atendimento Encaminhado', `O cliente ${chatsData[chatActiveCpf].nome} foi repassado para você.`, { destinatario: targetUser.usuario });
+
   toast('success', 'Encaminhado', `O cliente foi encaminhado para ${targetUser.nome}.`);
-  
   sel.value = '';
-  
+
   const isAdmin = funcLogado && (funcLogado.usuario === 'admin' || funcLogado.role.toLowerCase().includes('gerente'));
   if (!isAdmin) {
     chatActiveCpf = null;
     document.getElementById('chatActiveUser').textContent = 'Selecione uma conversa';
     document.getElementById('chatInputArea').style.display = 'none';
-    document.getElementById('chatMessages').innerHTML = '<div class="empty-state" style="padding: 2rem; opacity: 0.7;">Selecione uma conversa para responder.</div>';
+    document.getElementById('chatMessages').innerHTML = '<div class="empty-state" style="padding:2rem;opacity:.7;">Selecione uma conversa para responder.</div>';
   }
-  
   renderChatList();
   if (chatActiveCpf) renderChatMsgs(chatActiveCpf);
 };
 
-window.encerrarChatAdmin = function() {
-  if (!chatActiveCpf || chatActiveCpf === 'CHAT_INTERNO') return;
+window.encerrarChatAdmin = async function() {
+  if (!chatActiveCpf) return;
   if (!confirm('Deseja realmente encerrar este atendimento? A conversa será removida da lista ativa.')) return;
 
+  await dbDeleteSuporteChat(chatActiveCpf);
   delete chatsData[chatActiveCpf];
-  localStorage.setItem('hd_chats', JSON.stringify(chatsData));
-  
+
   toast('success', 'Encerrado', 'O atendimento foi encerrado.');
-  
   chatActiveCpf = null;
   document.getElementById('chatActiveUser').textContent = 'Selecione uma conversa';
   document.getElementById('chatInputArea').style.display = 'none';
-  document.getElementById('chatMessages').innerHTML = '<div class="empty-state" style="padding: 2rem; opacity: 0.7;">Selecione uma conversa para responder.</div>';
-  
+  document.getElementById('chatMessages').innerHTML = '<div class="empty-state" style="padding:2rem;opacity:.7;">Selecione uma conversa para responder.</div>';
   if (document.getElementById('chatTransferArea')) document.getElementById('chatTransferArea').style.display = 'none';
   if (document.getElementById('btnEncerrarChatAdmin')) document.getElementById('btnEncerrarChatAdmin').style.display = 'none';
-  
   renderChatList();
 };
 
@@ -1090,46 +1294,30 @@ setTimeout(() => {
   });
 }, 100);
 
-let chatInternoMsgs = JSON.parse(localStorage.getItem('hd_chat_interno') || '[]');
-let directMsgs = JSON.parse(localStorage.getItem('hd_dms') || '{}');
-let chatInternoActive = 'GERAL';
-let lastReadTime = {};
-
+// ─── Chat Interno ─────────────────────────────────────────────────────────────
 window.loadLastRead = function() {
-  if (funcLogado) {
-    lastReadTime = JSON.parse(localStorage.getItem(`hd_last_read_${funcLogado.usuario}`) || '{}');
-  }
+  if (funcLogado) lastReadTime = JSON.parse(localStorage.getItem(`hd_last_read_${funcLogado.usuario}`) || '{}');
 };
-
 window.saveLastRead = function() {
-  if (funcLogado) {
-    localStorage.setItem(`hd_last_read_${funcLogado.usuario}`, JSON.stringify(lastReadTime));
-  }
+  if (funcLogado) localStorage.setItem(`hd_last_read_${funcLogado.usuario}`, JSON.stringify(lastReadTime));
 };
-
 window.getUnreadCount = function(chatId, msgs) {
   if (!funcLogado || !msgs || msgs.length === 0) return 0;
   const lrTime = lastReadTime[chatId] ? new Date(lastReadTime[chatId]).getTime() : 0;
   return msgs.filter(m => new Date(m.data).getTime() > lrTime && m.autor !== funcLogado.nome).length;
 };
-
 window.updateChatBadge = function() {
   if (!funcLogado) return;
   loadLastRead();
-  let totalUnread = 0;
-  totalUnread += getUnreadCount('GERAL', chatInternoMsgs);
-  
+  let totalUnread = getUnreadCount('GERAL', chatInternoMsgs);
   if (FUNCIONARIOS) {
     FUNCIONARIOS.forEach(f => {
       if (f.usuario !== funcLogado.usuario) {
-        const users = [funcLogado.usuario, f.usuario].sort();
-        const convKey = users.join('_');
-        const msgs = directMsgs[convKey] || [];
-        totalUnread += getUnreadCount(f.usuario, msgs);
+        const convKey = [funcLogado.usuario, f.usuario].sort().join('_');
+        totalUnread += getUnreadCount(f.usuario, directMsgs[convKey] || []);
       }
     });
   }
-  
   const navItem = document.querySelector('.nav-item[data-page="chat"]');
   if (navItem) {
     let badge = navItem.querySelector('.chat-badge');
@@ -1137,20 +1325,18 @@ window.updateChatBadge = function() {
       if (!badge) {
         badge = document.createElement('span');
         badge.className = 'chat-badge';
-        badge.style.cssText = 'background:var(--red);color:white;font-size:0.65rem;padding:0.1rem 0.4rem;border-radius:10px;margin-left:auto;font-weight:bold;';
+        badge.style.cssText = 'background:var(--red);color:white;font-size:.65rem;padding:.1rem .4rem;border-radius:10px;margin-left:auto;font-weight:bold;';
         navItem.appendChild(badge);
       }
       badge.textContent = totalUnread > 9 ? '9+' : totalUnread;
-    } else if (badge) {
-      badge.remove();
-    }
+    } else if (badge) badge.remove();
   }
 };
 
 window.renderChatInternoList = function() {
   const list = document.getElementById('chatInternoList');
   if (!list) return;
-  
+
   if (logado) {
     loadLastRead();
     lastReadTime[chatInternoActive] = new Date().toISOString();
@@ -1158,45 +1344,24 @@ window.renderChatInternoList = function() {
   }
 
   let chatItems = [];
-  
-  let geralLastTime = '';
-  if (chatInternoMsgs && chatInternoMsgs.length > 0) {
-    geralLastTime = chatInternoMsgs[chatInternoMsgs.length - 1].data;
-  }
-  chatItems.push({
-    id: 'GERAL',
-    name: '💬 Chat Geral',
-    role: 'Equipe',
-    lastTime: geralLastTime,
-    unread: getUnreadCount('GERAL', chatInternoMsgs)
-  });
+  let geralLastTime = chatInternoMsgs.length > 0 ? chatInternoMsgs[chatInternoMsgs.length - 1].data : '';
+  chatItems.push({ id: 'GERAL', name: '💬 Chat Geral', role: 'Equipe', lastTime: geralLastTime, unread: getUnreadCount('GERAL', chatInternoMsgs) });
 
   if (funcLogado && FUNCIONARIOS) {
     FUNCIONARIOS.forEach(f => {
       if (f.usuario !== funcLogado.usuario) {
-        const users = [funcLogado.usuario, f.usuario].sort();
-        const convKey = users.join('_');
-        let lastTime = '';
-        let unread = 0;
-        if (directMsgs[convKey] && directMsgs[convKey].length > 0) {
-          lastTime = directMsgs[convKey][directMsgs[convKey].length - 1].data;
-          unread = getUnreadCount(f.usuario, directMsgs[convKey]);
-        }
-        chatItems.push({
-          id: f.usuario,
-          name: `👤 ${f.nome}`,
-          role: f.role,
-          lastTime: lastTime,
-          unread: unread
-        });
+        const convKey = [funcLogado.usuario, f.usuario].sort().join('_');
+        const msgs = directMsgs[convKey] || [];
+        const lastTime = msgs.length > 0 ? msgs[msgs.length - 1].data : '';
+        chatItems.push({ id: f.usuario, name: `👤 ${f.nome}`, role: f.role, lastTime, unread: getUnreadCount(f.usuario, msgs) });
       }
     });
   }
-  
+
   chatItems.sort((a, b) => {
-    const timeA = a.lastTime ? new Date(a.lastTime).getTime() : 0;
-    const timeB = b.lastTime ? new Date(b.lastTime).getTime() : 0;
-    if (timeA !== timeB) return timeB - timeA;
+    const tA = a.lastTime ? new Date(a.lastTime).getTime() : 0;
+    const tB = b.lastTime ? new Date(b.lastTime).getTime() : 0;
+    if (tA !== tB) return tB - tA;
     if (a.id === 'GERAL') return -1;
     if (b.id === 'GERAL') return 1;
     return a.name.localeCompare(b.name);
@@ -1205,7 +1370,7 @@ window.renderChatInternoList = function() {
   list.innerHTML = chatItems.map(item => {
     const funcItem = FUNCIONARIOS.find(f => f.usuario === item.id);
     const avatarHtml = funcItem && funcItem.foto
-      ? `<img src="${funcItem.foto}" alt="${funcItem.nome}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;margin-right:0.6rem;flex-shrink:0;" onerror="this.outerHTML='<div style=\'width:32px;height:32px;border-radius:50%;background:var(--accent);color:white;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85rem;margin-right:.6rem;flex-shrink:0;\'>${item.name[0].toUpperCase()}</div>'">`
+      ? `<img src="${funcItem.foto}" alt="${funcItem.nome}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;margin-right:.6rem;flex-shrink:0;" onerror="this.outerHTML='<div style=\'width:32px;height:32px;border-radius:50%;background:var(--accent);color:white;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85rem;margin-right:.6rem;flex-shrink:0;\'>${item.name[0].toUpperCase()}</div>'">`
       : `<div style="width:32px;height:32px;border-radius:50%;background:var(--accent);color:white;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.85rem;margin-right:.6rem;flex-shrink:0;">${item.name[0].toUpperCase()}</div>`;
     return `
     <div class="chat-list-item ${chatInternoActive === item.id ? 'active' : ''}" onclick="selectChatInterno('${item.id}')" style="display:flex;align-items:center;">
@@ -1214,10 +1379,9 @@ window.renderChatInternoList = function() {
         <div class="cli-name">${item.name}</div>
         <div class="cli-cpf">${item.role}</div>
       </div>
-      ${item.unread > 0 ? `<div style="background:var(--red);color:white;font-size:0.75rem;padding:0.1rem 0.4rem;border-radius:10px;font-weight:bold;">${item.unread}</div>` : ''}
+      ${item.unread > 0 ? `<div style="background:var(--red);color:white;font-size:.75rem;padding:.1rem .4rem;border-radius:10px;font-weight:bold;">${item.unread}</div>` : ''}
     </div>`;
   }).join('');
-  
   updateChatBadge();
 };
 
@@ -1230,7 +1394,7 @@ window.selectChatInterno = function(target) {
 function renderChatInterno() {
   const container = document.getElementById('chatInternoMessages');
   if (!container) return;
-  
+
   if (chatInternoActive === 'GERAL') {
     document.getElementById('chatInternoHeader').textContent = '💬 Chat Geral da Empresa';
     if (chatInternoMsgs.length === 0) {
@@ -1238,58 +1402,50 @@ function renderChatInterno() {
     } else {
       container.innerHTML = chatInternoMsgs.map(m => {
         const isMe = funcLogado && m.autor === funcLogado.nome;
-        return `<div class="chat-msg ${isMe ? 'me' : 'other'}"><div class="chat-bubble">${m.texto.replace(/\n/g, '<br/>')}</div><div class="chat-meta">${m.autor} · ${dataFormatada(m.data)}</div></div>`;
+        return `<div class="chat-msg ${isMe ? 'me' : 'other'}"><div class="chat-bubble">${m.texto.replace(/\n/g,'<br/>')}</div><div class="chat-meta">${m.autor} · ${dataFormatada(m.data)}</div></div>`;
       }).join('');
     }
   } else {
     const targetUser = FUNCIONARIOS.find(f => f.usuario === chatInternoActive);
-    if (!targetUser) {
-      chatInternoActive = 'GERAL';
-      renderChatInternoList();
-      renderChatInterno();
-      return;
-    }
+    if (!targetUser) { chatInternoActive = 'GERAL'; renderChatInternoList(); renderChatInterno(); return; }
     document.getElementById('chatInternoHeader').textContent = `👤 ${targetUser.nome} (${targetUser.role})`;
-    
-    const users = [funcLogado.usuario, targetUser.usuario].sort();
-    const convKey = users.join('_');
+    const convKey = [funcLogado.usuario, targetUser.usuario].sort().join('_');
     const msgs = directMsgs[convKey] || [];
-    
     if (msgs.length === 0) {
       container.innerHTML = `<div style="text-align:center;color:var(--text-3);font-size:.85rem;margin-top:2rem;">Envie a primeira mensagem para ${targetUser.nome}.</div>`;
     } else {
       container.innerHTML = msgs.map(m => {
         const isMe = funcLogado && m.autor === funcLogado.nome;
-        return `<div class="chat-msg ${isMe ? 'me' : 'other'}"><div class="chat-bubble">${m.texto.replace(/\n/g, '<br/>')}</div><div class="chat-meta">${m.autor} · ${dataFormatada(m.data)}</div></div>`;
+        return `<div class="chat-msg ${isMe ? 'me' : 'other'}"><div class="chat-bubble">${m.texto.replace(/\n/g,'<br/>')}</div><div class="chat-meta">${m.autor} · ${dataFormatada(m.data)}</div></div>`;
       }).join('');
     }
   }
   container.scrollTop = container.scrollHeight;
 }
 
-window.enviarMsgChatInterno = function() {
+window.enviarMsgChatInterno = async function() {
   if (!logado) return;
-  const inp = document.getElementById('chatInternoInput');
+  const inp   = document.getElementById('chatInternoInput');
   const texto = inp.value.trim();
   if (!texto) return;
-  
+
   if (chatInternoActive === 'GERAL') {
-    chatInternoMsgs.push({ autor: funcLogado.nome, texto, data: new Date().toISOString() });
-    localStorage.setItem('hd_chat_interno', JSON.stringify(chatInternoMsgs));
-    addNotif('Chat Geral', `Nova mensagem de ${funcLogado.nome}`, { ignorar: funcLogado.usuario });
+    const msg = { autor: funcLogado.nome, texto, data: new Date().toISOString() };
+    chatInternoMsgs.push(msg);
+    await dbSendChatMsg('GERAL', funcLogado.nome, texto, true);
+    if (!dbReady) localStorage.setItem('hd_chat_interno', JSON.stringify(chatInternoMsgs));
+    await addNotif('Chat Geral', `Nova mensagem de ${funcLogado.nome}`, { ignorar: funcLogado.usuario });
   } else {
     const targetUser = FUNCIONARIOS.find(f => f.usuario === chatInternoActive);
     if (!targetUser) return;
-    
-    const users = [funcLogado.usuario, targetUser.usuario].sort();
-    const convKey = users.join('_');
-    
+    const convKey = [funcLogado.usuario, targetUser.usuario].sort().join('_');
     if (!directMsgs[convKey]) directMsgs[convKey] = [];
-    directMsgs[convKey].push({ autor: funcLogado.nome, texto, data: new Date().toISOString() });
-    localStorage.setItem('hd_dms', JSON.stringify(directMsgs));
-    addNotif('Mensagem', `Nova mensagem de ${funcLogado.nome}`, { destinatario: targetUser.usuario });
+    const msg = { autor: funcLogado.nome, texto, data: new Date().toISOString() };
+    directMsgs[convKey].push(msg);
+    await dbSendChatMsg(convKey, funcLogado.nome, texto, true);
+    if (!dbReady) localStorage.setItem('hd_dms', JSON.stringify(directMsgs));
+    await addNotif('Mensagem', `Nova mensagem de ${funcLogado.nome}`, { destinatario: targetUser.usuario });
   }
-  
   inp.value = '';
   renderChatInternoList();
   renderChatInterno();
@@ -1301,19 +1457,19 @@ setTimeout(() => {
   });
 }, 100);
 
+// ─── Relatórios ───────────────────────────────────────────────────────────────
 function renderGraficos() {
   Object.values(chartInstances).forEach(ch => ch.destroy());
   chartInstances = {};
 
-  const isDark = document.body.classList.contains('dark-mode');
-  const textColor   = isDark ? '#8da3bf' : '#475569';
-  const gridColor   = isDark ? '#1c2e4a' : '#e2e8f0';
-  const accent      = isDark ? '#3d7eff' : '#0056e0';
-  const cyan        = '#00b8d9';
-  const amber       = '#d97706';
-  const green       = '#16a34a';
-  const red         = '#dc2626';
-  const purple      = '#7c3aed';
+  const isDark     = document.body.classList.contains('dark-mode');
+  const textColor  = isDark ? '#8da3bf' : '#475569';
+  const gridColor  = isDark ? '#1c2e4a' : '#e2e8f0';
+  const accent     = isDark ? '#3d7eff' : '#0056e0';
+  const cyan       = '#00b8d9';
+  const amber      = '#d97706';
+  const green      = '#16a34a';
+  const red        = '#dc2626';
 
   const defaults = {
     plugins: { legend: { labels: { color: textColor, font: { family: "'Plus Jakarta Sans'" } } } },
@@ -1323,14 +1479,11 @@ function renderGraficos() {
     },
   };
 
-  const setores = ['TI','RH','Financeiro','Administrativo','Comercial','Marketing','Redes','Segurança','Infraestrutura'];
+  const setores  = ['TI','RH','Financeiro','Administrativo','Comercial','Marketing','Redes','Segurança','Infraestrutura'];
   const porSetor = setores.map(s => chamados.filter(c => c.setor === s).length);
   chartInstances.setor = new Chart(document.getElementById('chartSetor'), {
     type: 'bar',
-    data: {
-      labels: setores,
-      datasets: [{ label: 'Chamados', data: porSetor, backgroundColor: accent, borderRadius: 6 }],
-    },
+    data: { labels: setores, datasets: [{ label: 'Chamados', data: porSetor, backgroundColor: accent, borderRadius: 6 }] },
     options: { ...defaults, responsive: true, maintainAspectRatio: false },
   });
 
@@ -1338,55 +1491,30 @@ function renderGraficos() {
   const porPrio     = prioridades.map(p => chamados.filter(c => c.prioridade === p).length);
   chartInstances.prio = new Chart(document.getElementById('chartPrio'), {
     type: 'doughnut',
-    data: {
-      labels: prioridades,
-      datasets: [{ data: porPrio, backgroundColor: [green, cyan, amber, red], borderWidth: 0 }],
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: textColor } } },
-    },
+    data: { labels: prioridades, datasets: [{ data: porPrio, backgroundColor: [green, cyan, amber, red], borderWidth: 0 }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: textColor } } } },
   });
 
-  const meses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  const meses  = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   const porMes = meses.map((_, i) =>
-    chamados.filter(c => {
-      const d = new Date(c.data);
-      return d.getMonth() === i && (c.status === 'Resolvido' || c.status === 'Fechado');
-    }).length
+    chamados.filter(c => { const d = new Date(c.data); return d.getMonth() === i && (c.status === 'Resolvido' || c.status === 'Fechado'); }).length
   );
   chartInstances.mes = new Chart(document.getElementById('chartMes'), {
     type: 'line',
-    data: {
-      labels: meses,
-      datasets: [{
-        label: 'Concluídos',
-        data: porMes,
-        borderColor: accent,
-        backgroundColor: isDark ? 'rgba(61,126,255,.15)' : 'rgba(0,86,224,.10)',
-        fill: true, tension: 0.4, pointBackgroundColor: accent,
-      }],
-    },
+    data: { labels: meses, datasets: [{ label: 'Concluídos', data: porMes, borderColor: accent, backgroundColor: isDark ? 'rgba(61,126,255,.15)' : 'rgba(0,86,224,.10)', fill: true, tension: 0.4, pointBackgroundColor: accent }] },
     options: { ...defaults, responsive: true, maintainAspectRatio: false },
   });
 
   chartInstances.tempo = new Chart(document.getElementById('chartTempo'), {
     type: 'bar',
-    data: {
-      labels: prioridades,
-      datasets: [{
-        label: 'Horas médias',
-        data: [48, 24, 8, 2],
-        backgroundColor: [green, cyan, amber, red],
-        borderRadius: 6,
-      }],
-    },
+    data: { labels: prioridades, datasets: [{ label: 'Horas médias', data: [48, 24, 8, 2], backgroundColor: [green, cyan, amber, red], borderRadius: 6 }] },
     options: { ...defaults, responsive: true, maintainAspectRatio: false, indexAxis: 'y' },
   });
 }
 
 document.getElementById('btnUpdateReports')?.addEventListener('click', renderGraficos);
 
+// ─── Theme ────────────────────────────────────────────────────────────────────
 const themeToggle = document.getElementById('themeToggle');
 const savedTheme  = localStorage.getItem('hd_theme') || 'light-mode';
 document.body.className = savedTheme;
@@ -1395,88 +1523,66 @@ themeToggle.addEventListener('click', () => {
   const isDark = document.body.classList.contains('dark-mode');
   document.body.className = isDark ? 'light-mode' : 'dark-mode';
   localStorage.setItem('hd_theme', document.body.className);
-
   const pg = document.querySelector('.page.active');
   if (pg && pg.id === 'page-relatorios') renderGraficos();
 });
 
+// ─── UI Events ────────────────────────────────────────────────────────────────
 document.getElementById('notifBtn').addEventListener('click', (e) => {
   e.stopPropagation();
   document.getElementById('notifPanel').classList.toggle('open');
 });
-document.getElementById('clearNotifs').addEventListener('click', () => {
+document.getElementById('clearNotifs').addEventListener('click', async () => {
   notificacoes = [];
-  salvar();
+  if (dbReady) {
+    try { await db.query('DELETE FROM notifications'); } catch(e) {}
+  }
+  if (!dbReady) salvarLS();
   renderNotifs();
 });
 document.addEventListener('click', (e) => {
-  if (!e.target.closest('#notifPanel') && !e.target.closest('#notifBtn')) {
+  if (!e.target.closest('#notifPanel') && !e.target.closest('#notifBtn'))
     document.getElementById('notifPanel').classList.remove('open');
-  }
 });
-
 document.getElementById('hamburger').addEventListener('click', () => {
   document.getElementById('navLinks').classList.toggle('mobile-open');
 });
-
 const backToTop = document.getElementById('backToTop');
-window.addEventListener('scroll', () => {
-  backToTop.classList.toggle('visible', window.scrollY > 400);
-});
+window.addEventListener('scroll', () => backToTop.classList.toggle('visible', window.scrollY > 400));
 backToTop.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
 
 document.querySelectorAll('.nav-item[data-page]').forEach(link =>
-  link.addEventListener('click', (e) => {
-    e.preventDefault();
-    irPara(link.dataset.page);
-  })
+  link.addEventListener('click', (e) => { e.preventDefault(); irPara(link.dataset.page); })
 );
-
 document.querySelectorAll('[data-goto]').forEach(btn =>
   btn.addEventListener('click', () => irPara(btn.dataset.goto))
 );
-
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-goto]');
   if (el) irPara(el.dataset.goto);
 });
 
-// Sincronização em tempo real entre abas (Local Storage Event)
+// ─── Cross-tab sync (localStorage fallback) ───────────────────────────────────
 window.addEventListener('storage', function(e) {
+  if (dbReady) return; // DB handles sync
   if (e.key === 'hd_chats') {
     chatsData = JSON.parse(e.newValue || '{}');
-    if (chatMode) {
-      if (chatMode === 'admin') renderChatList();
-      if (chatActiveCpf && chatsData[chatActiveCpf]) {
-        renderChatMsgs(chatActiveCpf);
-      }
-    }
+    if (chatMode === 'admin') renderChatList();
+    if (chatActiveCpf && chatsData[chatActiveCpf]) renderChatMsgs(chatActiveCpf);
   } else if (e.key === 'hd_chat_interno') {
     chatInternoMsgs = JSON.parse(e.newValue || '[]');
     const pg = document.querySelector('.page.active');
-    if (pg && pg.id === 'page-chat') {
-      renderChatInternoList();
-      renderChatInterno();
-    } else {
-      updateChatBadge();
-    }
+    if (pg && pg.id === 'page-chat') { renderChatInternoList(); renderChatInterno(); }
+    else updateChatBadge();
   } else if (e.key === 'hd_dms') {
     directMsgs = JSON.parse(e.newValue || '{}');
     const pg = document.querySelector('.page.active');
-    if (pg && pg.id === 'page-chat') {
-      renderChatInternoList();
-      renderChatInterno();
-    } else {
-      updateChatBadge();
-    }
+    if (pg && pg.id === 'page-chat') { renderChatInternoList(); renderChatInterno(); }
+    else updateChatBadge();
   } else if (e.key === 'hd_chamados') {
     chamados = JSON.parse(e.newValue || '[]');
-    atualizarHome();
-    renderMeusChamados();
-    if (logado) {
-      renderPainelLista();
-      atualizarStatsEmp();
-    }
+    atualizarHome(); renderMeusChamados();
+    if (logado) { renderPainelLista(); atualizarStatsEmp(); }
     const pg = document.querySelector('.page.active');
     if (pg && pg.id === 'page-relatorios') renderGraficos();
   } else if (e.key === 'hd_notifs') {
@@ -1488,7 +1594,33 @@ window.addEventListener('storage', function(e) {
   }
 });
 
-(function init() {
+// ─── DB status indicator ──────────────────────────────────────────────────────
+function showDBStatus(ok) {
+  const badge = document.createElement('div');
+  badge.style.cssText = `
+    position: fixed; bottom: 1.5rem; left: 1.5rem; z-index: 9999;
+    background: ${ok ? 'var(--green, #16a34a)' : '#d97706'};
+    color: white; padding: .4rem .9rem; border-radius: 999px;
+    font-size: .75rem; font-weight: 600; display: flex; align-items: center; gap: .4rem;
+    box-shadow: 0 2px 8px rgba(0,0,0,.2); transition: opacity .5s;
+  `;
+  badge.innerHTML = ok
+    ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg> Banco de dados conectado`
+    : `⚠️ Modo offline (localStorage)`;
+  document.body.appendChild(badge);
+  setTimeout(() => { badge.style.opacity = '0'; setTimeout(() => badge.remove(), 500); }, 3000);
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+(async function init() {
+  // Show loading state
+  document.getElementById('cnt-abertos').textContent    = '…';
+  document.getElementById('cnt-andamento').textContent  = '…';
+  document.getElementById('cnt-concluidos').textContent = '…';
+
+  const ok = await initDB();
+  showDBStatus(ok);
+
   renderNotifs();
   atualizarHome();
   renderEquipe();
