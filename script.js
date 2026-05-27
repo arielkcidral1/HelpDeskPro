@@ -3,10 +3,22 @@
 const HELP_DESK_SUPABASE = window.HELPDESK_SUPABASE || {};
 const SUPABASE_URL = HELP_DESK_SUPABASE.url || '';
 const SUPABASE_ANON_KEY = HELP_DESK_SUPABASE.anonKey || '';
+let dbErrorReason = '';
 
-function hasSupabaseConfig() {
-  return /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(SUPABASE_URL)
-    && /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(SUPABASE_ANON_KEY);
+function validateSupabaseConfig() {
+  if (!SUPABASE_URL || SUPABASE_URL.includes('SEU_PROJETO')) {
+    return 'URL do Supabase nao configurada';
+  }
+  if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(SUPABASE_URL)) {
+    return 'URL do Supabase invalida';
+  }
+  if (!SUPABASE_ANON_KEY || SUPABASE_ANON_KEY.includes('COLE_AQUI')) {
+    return 'Anon key do Supabase nao configurada';
+  }
+  if (!/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(SUPABASE_ANON_KEY)) {
+    return 'Anon key do Supabase invalida';
+  }
+  return '';
 }
 
 // Supabase Database Layer
@@ -21,8 +33,9 @@ async function initDB() {
 }
 
 async function initSupabaseDB() {
-  if (!hasSupabaseConfig()) {
-    console.error('Supabase config ausente ou invalida. Configure window.HELPDESK_SUPABASE com url e anonKey reais.');
+  dbErrorReason = validateSupabaseConfig();
+  if (dbErrorReason) {
+    console.error(`${dbErrorReason}. Configure window.HELPDESK_SUPABASE com url e anonKey reais.`);
     return false;
   }
 
@@ -41,6 +54,7 @@ async function initSupabaseDB() {
     console.log('Supabase database ready');
     return true;
   } catch (err) {
+    dbErrorReason = err?.message || 'Falha ao conectar no Supabase';
     console.error('Supabase init failed. O projeto exige o banco Supabase:', err);
     supabase = null;
     dbReady = false;
@@ -1605,7 +1619,7 @@ function showDBStatus(ok) {
   `;
   badge.innerHTML = ok
     ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg> Banco sincronizado'
-    : 'Banco do projeto indisponivel';
+    : `Banco indisponivel: ${dbErrorReason || 'verifique a configuracao'}`;
   document.body.appendChild(badge);
   setTimeout(() => { badge.style.opacity = '0'; setTimeout(() => badge.remove(), 500); }, 3000);
 }
