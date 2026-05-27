@@ -409,6 +409,10 @@ let clientAuthShownOnEntry = false;
 let currentAccountPrefs = {};
 let settingsActiveSection = 'geral';
 
+function isGerenciaFuncionario(func = funcLogado) {
+  return !!(func && (func.usuario === 'admin' || String(func.role || '').toLowerCase().includes('gerente')));
+}
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 function gerarId() {
   const timePart = Date.now().toString(36).toUpperCase().slice(-6);
@@ -892,6 +896,7 @@ function renderSettingsChamados() {
             <select id="settingsPanelDefaultTab">
               <option value="meus" ${currentAccountPrefs.panelDefaultTab === 'meus' ? 'selected' : ''}>Meus atendimentos</option>
               <option value="todos" ${currentAccountPrefs.panelDefaultTab === 'todos' ? 'selected' : ''}>Visão geral</option>
+              ${isGerenciaFuncionario() ? `<option value="clientes" ${currentAccountPrefs.panelDefaultTab === 'clientes' ? 'selected' : ''}>Clientes</option>` : ''}
             </select>
           </div>
         </div>
@@ -1534,33 +1539,24 @@ function entrarPainel() {
 
   document.body.classList.add('is-logged-in');
   updateAccountSettingsButton();
-  if (funcLogado.usuario === 'admin' || funcLogado.role.toLowerCase().includes('gerente')) {
+  if (isGerenciaFuncionario()) {
     document.body.classList.add('is-admin');
     document.getElementById('tabTodosAtend').style.display = 'inline-flex';
-    painelTab = 'todos';
-    document.getElementById('tabTodosAtend').classList.add('active');
-    document.getElementById('tabMeusAtend').classList.remove('active');
+    document.getElementById('tabClientesGerencia').style.display = 'inline-flex';
+    setPainelTab('todos', false);
   } else {
     document.getElementById('tabTodosAtend').style.display = 'none';
-    painelTab = 'meus';
-    document.getElementById('tabMeusAtend').classList.add('active');
-    document.getElementById('tabTodosAtend').classList.remove('active');
+    document.getElementById('tabClientesGerencia').style.display = 'none';
+    setPainelTab('meus', false);
   }
 
   atualizarStatsEmp();
   renderPainelLista();
   renderNotifs();
   loadCurrentAccountPrefs().then(() => {
-    const isGestor = funcLogado && (funcLogado.usuario === 'admin' || funcLogado.role.toLowerCase().includes('gerente'));
-    if (isGestor && currentAccountPrefs.panelDefaultTab === 'meus') {
-      painelTab = 'meus';
-      document.getElementById('tabMeusAtend').classList.add('active');
-      document.getElementById('tabTodosAtend').classList.remove('active');
-    }
-    if (isGestor && currentAccountPrefs.panelDefaultTab === 'todos') {
-      painelTab = 'todos';
-      document.getElementById('tabTodosAtend').classList.add('active');
-      document.getElementById('tabMeusAtend').classList.remove('active');
+    const isGestor = isGerenciaFuncionario();
+    if (isGestor && ['meus', 'todos', 'clientes'].includes(currentAccountPrefs.panelDefaultTab)) {
+      setPainelTab(currentAccountPrefs.panelDefaultTab, false);
     }
     atualizarStatsEmp();
     renderPainelLista();
@@ -1568,7 +1564,52 @@ function entrarPainel() {
   });
 }
 
+function setPainelTab(nextTab, refresh = true) {
+  const allowedTab = nextTab === 'clientes' && !isGerenciaFuncionario() ? 'meus' : nextTab;
+  painelTab = allowedTab;
+  document.getElementById('tabMeusAtend')?.classList.toggle('active', allowedTab === 'meus');
+  document.getElementById('tabTodosAtend')?.classList.toggle('active', allowedTab === 'todos');
+  document.getElementById('tabClientesGerencia')?.classList.toggle('active', allowedTab === 'clientes');
+  updatePainelFilters();
+  if (refresh) {
+    atualizarStatsEmp();
+    renderPainelLista();
+  }
+}
+
+function updatePainelFilters() {
+  const search = document.getElementById('searchPainel');
+  const status = document.getElementById('pFilterStatus');
+  const setor = document.getElementById('pFilterSetor');
+  if (!search || !status || !setor) return;
+  const isClientTab = painelTab === 'clientes';
+  search.placeholder = isClientTab ? 'Buscar cliente...' : 'Buscar chamado...';
+  status.style.display = isClientTab ? 'none' : '';
+  setor.style.display = isClientTab ? 'none' : '';
+}
+
 function atualizarStatsEmp() {
+  const labels = document.querySelectorAll('.emp-stat .es-lbl');
+  if (painelTab === 'clientes' && isGerenciaFuncionario()) {
+    const novos = countClientesRecentes(7);
+    const comChamados = CLIENTES.filter(c => getChamadosDoCliente(c).length > 0).length;
+    const taxa = CLIENTES.length > 0 ? Math.round((comChamados / CLIENTES.length) * 100) : 0;
+    if (labels.length >= 3) {
+      labels[0].textContent = 'Clientes';
+      labels[1].textContent = 'Novos 7 dias';
+      labels[2].textContent = 'Com chamados';
+    }
+    document.getElementById('empTotal').textContent = CLIENTES.length;
+    document.getElementById('empConcluidos').textContent = novos;
+    document.getElementById('empTaxa').textContent = `${taxa}%`;
+    return;
+  }
+
+  if (labels.length >= 3) {
+    labels[0].textContent = 'Atendimentos';
+    labels[1].textContent = 'Concluídos';
+    labels[2].textContent = 'Taxa Resolução';
+  }
   const listaStats = painelTab === 'todos' ? chamados : chamados.filter(c => c.responsavel === funcLogado.nome);
   const total = listaStats.length;
   const conc  = listaStats.filter(c => c.status === 'Resolvido' || c.status === 'Fechado').length;
@@ -1578,30 +1619,80 @@ function atualizarStatsEmp() {
   document.getElementById('empTaxa').textContent       = `${taxa}%`;
 }
 
+function getClienteKey(cliente) {
+  return {
+    id: String(cliente?.id || ''),
+    cpf: normalizeCpf(cliente?.cpf || ''),
+    email: normalizeEmail(cliente?.email || '')
+  };
+}
+
+function getChamadosDoCliente(cliente) {
+  const key = getClienteKey(cliente);
+  return chamados.filter(c => {
+    const byId = key.id && String(c.clientId || '') === key.id;
+    const byCpf = key.cpf && normalizeCpf(c.cpf || '') === key.cpf;
+    const byEmail = key.email && normalizeEmail(c.email || '') === key.email;
+    return byId || byCpf || byEmail;
+  });
+}
+
+function getChatSuporteDoCliente(cliente) {
+  const key = getClienteKey(cliente);
+  return Object.entries(chatsData).find(([cpf, chat]) => {
+    const byId = key.id && String(chat.clientId || '') === key.id;
+    const byCpf = key.cpf && normalizeCpf(cpf) === key.cpf;
+    return byId || byCpf;
+  });
+}
+
+function countClientesRecentes(days = 7) {
+  const since = Date.now() - (days * 24 * 60 * 60 * 1000);
+  return CLIENTES.filter(c => c.data && new Date(c.data).getTime() >= since).length;
+}
+
+function getTopClienteSetor() {
+  const counts = chamados.reduce((acc, c) => {
+    if (!c.setor) return acc;
+    acc[c.setor] = (acc[c.setor] || 0) + 1;
+    return acc;
+  }, {});
+  const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return top ? `${top[0]} (${top[1]})` : 'Sem dados';
+}
+
 document.getElementById('btnLogout')?.addEventListener('click', () => {
   logoutFuncionario();
 });
 
 document.getElementById('tabMeusAtend')?.addEventListener('click', (e) => {
-  painelTab = 'meus';
-  e.target.classList.add('active');
-  document.getElementById('tabTodosAtend').classList.remove('active');
-  atualizarStatsEmp(); renderPainelLista();
+  setPainelTab('meus');
 });
 document.getElementById('tabTodosAtend')?.addEventListener('click', (e) => {
-  painelTab = 'todos';
-  e.target.classList.add('active');
-  document.getElementById('tabMeusAtend').classList.remove('active');
-  atualizarStatsEmp(); renderPainelLista();
+  setPainelTab('todos');
+});
+document.getElementById('tabClientesGerencia')?.addEventListener('click', () => {
+  if (!isGerenciaFuncionario()) {
+    toast('error', 'Sem Permissão', 'Acesso restrito à gerência.');
+    return;
+  }
+  setPainelTab('clientes');
 });
 
 function renderPainel() {
   if (!logado) return;
+  if (painelTab === 'clientes' && !isGerenciaFuncionario()) setPainelTab('meus', false);
   atualizarStatsEmp();
   renderPainelLista();
 }
 
 function renderPainelLista() {
+  updatePainelFilters();
+  if (painelTab === 'clientes') {
+    renderClientesGerencia();
+    return;
+  }
+
   const busca  = document.getElementById('searchPainel').value.toLowerCase();
   const status = document.getElementById('pFilterStatus').value;
   const setor  = document.getElementById('pFilterSetor').value;
@@ -1623,6 +1714,102 @@ function renderPainelLista() {
   cont.innerHTML = lista.map(c => ticketRowHTML(c, true)).join('');
   cont.querySelectorAll('.ticket-row').forEach(row =>
     row.addEventListener('click', () => abrirModal(row.dataset.id, true)));
+}
+
+function renderClientesGerencia() {
+  const cont = document.getElementById('painelList');
+  if (!isGerenciaFuncionario()) {
+    cont.innerHTML = `<div class="empty-state"><p>Acesso restrito à gerência.</p></div>`;
+    return;
+  }
+
+  const busca = document.getElementById('searchPainel').value.toLowerCase();
+  const clientesOrdenados = [...CLIENTES].sort((a, b) => new Date(b.data || 0) - new Date(a.data || 0));
+  const clientesFiltrados = clientesOrdenados.filter(c => {
+    const chamadosCliente = getChamadosDoCliente(c);
+    const texto = `${c.id} ${c.nome} ${formatCpf(c.cpf)} ${c.email} ${chamadosCliente.map(x => `${x.id} ${x.setor} ${x.status}`).join(' ')}`.toLowerCase();
+    return !busca || texto.includes(busca);
+  });
+
+  const novosHoje = countClientesRecentes(1);
+  const novos7 = countClientesRecentes(7);
+  const comChamados = CLIENTES.filter(c => getChamadosDoCliente(c).length > 0).length;
+  const comChamadosAbertos = CLIENTES.filter(c => getChamadosDoCliente(c).some(t => t.status !== 'Resolvido' && t.status !== 'Fechado')).length;
+  const chatsAbertos = CLIENTES.filter(c => getChatSuporteDoCliente(c)).length;
+  const mediaChamados = CLIENTES.length ? (chamados.filter(c => c.clientId || c.cpf || c.email).length / CLIENTES.length).toFixed(1) : '0.0';
+
+  cont.innerHTML = `
+    <div class="client-manager">
+      <div class="client-insights-grid">
+        <div class="client-insight-card">
+          <span>Total de clientes</span>
+          <strong>${CLIENTES.length}</strong>
+          <small>${clientesFiltrados.length} na busca atual</small>
+        </div>
+        <div class="client-insight-card">
+          <span>Novos clientes</span>
+          <strong>${novos7}</strong>
+          <small>${novosHoje} nas ultimas 24h</small>
+        </div>
+        <div class="client-insight-card">
+          <span>Com chamados</span>
+          <strong>${comChamados}</strong>
+          <small>${comChamadosAbertos} com chamados ativos</small>
+        </div>
+        <div class="client-insight-card">
+          <span>Suporte em aberto</span>
+          <strong>${chatsAbertos}</strong>
+          <small>Setor mais acionado: ${escapeHtml(getTopClienteSetor())}</small>
+        </div>
+      </div>
+
+      <div class="client-management-head">
+        <div>
+          <h3>Clientes cadastrados</h3>
+          <p>Mais recentes primeiro, com cruzamento de chamados e suporte.</p>
+        </div>
+        <span class="client-average">Média ${mediaChamados} chamados por cliente</span>
+      </div>
+
+      <div class="client-list">
+        ${clientesFiltrados.length ? clientesFiltrados.map(renderClienteGerenciaRow).join('') : `<div class="empty-state"><p>Nenhum cliente encontrado.</p></div>`}
+      </div>
+    </div>`;
+}
+
+function renderClienteGerenciaRow(cliente) {
+  const chamadosCliente = getChamadosDoCliente(cliente);
+  const abertos = chamadosCliente.filter(c => c.status !== 'Resolvido' && c.status !== 'Fechado').length;
+  const resolvidos = chamadosCliente.filter(c => c.status === 'Resolvido' || c.status === 'Fechado').length;
+  const chat = getChatSuporteDoCliente(cliente);
+  const createdAt = cliente.data ? new Date(cliente.data).getTime() : 0;
+  const isNovo = createdAt && createdAt >= Date.now() - (7 * 24 * 60 * 60 * 1000);
+  const initials = (cliente.nome || 'C').split(' ').slice(0, 2).map(p => p.charAt(0)).join('').toUpperCase();
+  const ultimoChamado = [...chamadosCliente].sort((a, b) => new Date(b.data || 0) - new Date(a.data || 0))[0];
+  const ultimaAtividade = ultimoChamado?.data || cliente.data;
+
+  return `
+    <div class="client-row">
+      <div class="client-avatar">${escapeHtml(initials || 'C')}</div>
+      <div class="client-row-main">
+        <div class="client-title">
+          <strong>${escapeHtml(cliente.nome || 'Cliente sem nome')}</strong>
+          ${isNovo ? '<span class="badge-status status-em-analise">Novo</span>' : ''}
+          ${chat ? '<span class="badge-status status-em-andamento">Suporte aberto</span>' : ''}
+        </div>
+        <div class="client-meta">
+          <span>${escapeHtml(cliente.email || 'Sem e-mail')}</span>
+          <span>${formatCpf(cliente.cpf) || 'CPF nao informado'}</span>
+          <span>ID ${escapeHtml(String(cliente.id || '-'))}</span>
+        </div>
+        <div class="client-last">Cadastro: ${dataFormatada(cliente.data)} · Última atividade: ${dataFormatada(ultimaAtividade)}</div>
+      </div>
+      <div class="client-row-stats">
+        <span><strong>${chamadosCliente.length}</strong> chamados</span>
+        <span><strong>${abertos}</strong> ativos</span>
+        <span><strong>${resolvidos}</strong> resolvidos</span>
+      </div>
+    </div>`;
 }
 
 ['searchPainel','pFilterStatus','pFilterSetor'].forEach(id => {
