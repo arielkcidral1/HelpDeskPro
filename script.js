@@ -3,6 +3,12 @@
 const HELP_DESK_SUPABASE = window.HELPDESK_SUPABASE || {};
 const SUPABASE_URL = HELP_DESK_SUPABASE.url || '';
 const SUPABASE_ANON_KEY = HELP_DESK_SUPABASE.anonKey || '';
+const ALLOW_LOCAL_DB_FALLBACK = HELP_DESK_SUPABASE.localFallback === true;
+
+function hasSupabaseConfig() {
+  return /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(SUPABASE_URL)
+    && /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(SUPABASE_ANON_KEY);
+}
 
 // ─── PGlite Database Layer ────────────────────────────────────────────────────
 let db = null;
@@ -12,6 +18,18 @@ let supabase = null;
 
 async function initDB() {
   if (await initSupabaseDB()) return true;
+
+  if (!ALLOW_LOCAL_DB_FALLBACK) {
+    dbReady = false;
+    dbMode = 'supabase-unavailable';
+    FUNCIONARIOS = [...defaultFuncionarios];
+    chamados = [];
+    notificacoes = [];
+    chatsData = {};
+    chatInternoMsgs = [];
+    directMsgs = {};
+    return false;
+  }
 
   try {
     const { PGlite } = await import('https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/index.js');
@@ -116,7 +134,10 @@ async function initDB() {
 }
 
 async function initSupabaseDB() {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return false;
+  if (!hasSupabaseConfig()) {
+    console.error('Supabase config ausente ou invalida. Configure window.HELPDESK_SUPABASE com url e anonKey reais.');
+    return false;
+  }
 
   try {
     const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
@@ -518,6 +539,8 @@ function loadFromLocalStorage() {
 }
 
 function salvarLS() {
+  if (!ALLOW_LOCAL_DB_FALLBACK) return;
+
   localStorage.setItem('hd_chamados', JSON.stringify(chamados));
   localStorage.setItem('hd_notifs', JSON.stringify(notificacoes));
   localStorage.setItem('hd_chats', JSON.stringify(chatsData));
@@ -1208,7 +1231,7 @@ window.removerFuncionario = async function(usuario) {
   const funcObj = FUNCIONARIOS.find(f => f.usuario === usuario);
   FUNCIONARIOS = FUNCIONARIOS.filter(f => f.usuario !== usuario);
   await dbDeleteStaff(usuario);
-  if (!dbReady) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
+  if (!dbReady && ALLOW_LOCAL_DB_FALLBACK) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
 
   if (funcObj) {
     let reatribuidos = 0;
@@ -1252,7 +1275,7 @@ document.getElementById('formEquipe')?.addEventListener('submit', async function
       }
       FUNCIONARIOS[idx] = { usuario: user, senha: pass, nome, role: cargo, foto: FUNCIONARIOS[idx].foto || '' };
       await dbSaveStaff(FUNCIONARIOS[idx]);
-      if (!dbReady) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
+      if (!dbReady && ALLOW_LOCAL_DB_FALLBACK) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
       toast('success', 'Sucesso', 'Funcionário atualizado com sucesso!');
       if (funcLogado && funcLogado.usuario === editandoUsuario) {
         funcLogado = FUNCIONARIOS[idx];
@@ -1270,7 +1293,7 @@ document.getElementById('formEquipe')?.addEventListener('submit', async function
     const novoFunc = { usuario: user, senha: pass, nome, role: cargo, foto: '' };
     FUNCIONARIOS.push(novoFunc);
     await dbSaveStaff(novoFunc);
-    if (!dbReady) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
+    if (!dbReady && ALLOW_LOCAL_DB_FALLBACK) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
     toast('success', 'Sucesso', 'Funcionário cadastrado com sucesso!');
     this.reset();
   }
@@ -1656,7 +1679,7 @@ window.enviarMsgChatInterno = async function() {
     const msg = { autor: funcLogado.nome, texto, data: new Date().toISOString() };
     chatInternoMsgs.push(msg);
     await dbSendChatMsg('GERAL', funcLogado.nome, texto, true);
-    if (!dbReady) localStorage.setItem('hd_chat_interno', JSON.stringify(chatInternoMsgs));
+    if (!dbReady && ALLOW_LOCAL_DB_FALLBACK) localStorage.setItem('hd_chat_interno', JSON.stringify(chatInternoMsgs));
     await addNotif('Chat Geral', `Nova mensagem de ${funcLogado.nome}`, { ignorar: funcLogado.usuario });
   } else {
     const targetUser = FUNCIONARIOS.find(f => f.usuario === chatInternoActive);
@@ -1666,7 +1689,7 @@ window.enviarMsgChatInterno = async function() {
     const msg = { autor: funcLogado.nome, texto, data: new Date().toISOString() };
     directMsgs[convKey].push(msg);
     await dbSendChatMsg(convKey, funcLogado.nome, texto, true);
-    if (!dbReady) localStorage.setItem('hd_dms', JSON.stringify(directMsgs));
+    if (!dbReady && ALLOW_LOCAL_DB_FALLBACK) localStorage.setItem('hd_dms', JSON.stringify(directMsgs));
     await addNotif('Mensagem', `Nova mensagem de ${funcLogado.nome}`, { destinatario: targetUser.usuario });
   }
   inp.value = '';
@@ -1789,7 +1812,7 @@ document.addEventListener('click', e => {
 
 // ─── Cross-tab sync (localStorage fallback) ───────────────────────────────────
 window.addEventListener('storage', function(e) {
-  if (dbReady) return; // DB handles sync
+  if (dbReady || !ALLOW_LOCAL_DB_FALLBACK) return; // DB handles sync
   if (e.key === 'hd_chats') {
     chatsData = JSON.parse(e.newValue || '{}');
     if (chatMode === 'admin') renderChatList();
@@ -1984,6 +2007,9 @@ function showDBStatus(ok) {
   badge.innerHTML = ok
     ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg> ${dbMode === 'supabase' ? 'Banco sincronizado' : 'Banco local conectado'}`
     : `⚠️ Modo offline (localStorage)`;
+  if (!ok) {
+    badge.textContent = ALLOW_LOCAL_DB_FALLBACK ? 'Banco local/offline' : 'Banco do projeto indisponivel';
+  }
   document.body.appendChild(badge);
   setTimeout(() => { badge.style.opacity = '0'; setTimeout(() => badge.remove(), 500); }, 3000);
 }
