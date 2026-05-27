@@ -587,7 +587,12 @@ function findClienteByCredential(credential, senha) {
 }
 
 function irPara(pagina) {
-  if ((pagina === 'abrir' || pagina === 'meus') && !clientePodeAcessarChamados(pagina === 'abrir' ? 'abrir um chamado' : 'ver seus chamados')) {
+  const acaoClientePorPagina = {
+    abrir: 'abrir um chamado',
+    meus: 'ver seus chamados'
+  };
+  if (pagina === 'suporte' && !logado) acaoClientePorPagina.suporte = 'acessar o suporte';
+  if (acaoClientePorPagina[pagina] && !clientePodeAcessarChamados(acaoClientePorPagina[pagina])) {
     return;
   }
   if ((pagina === 'equipe' || pagina === 'relatorios' || pagina === 'chat') && !logado) {

@@ -163,6 +163,7 @@ body.client-logged-in .client-session-btn {
   border-color: rgba(22,163,74,.25);
   background: var(--green-l);
 }
+body.is-logged-in .client-session-btn { display: none; }
 
 .ctrl-btn {
   position: relative;
