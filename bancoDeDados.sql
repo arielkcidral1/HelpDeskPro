@@ -1,435 +1,118 @@
---
--- PostgreSQL database dump
---
+-- Schema remoto para o HelpDesk Pro no Supabase/PostgreSQL.
+-- Cole este arquivo no SQL Editor do Supabase e execute antes de publicar o site.
 
--- Dumped from database version 16.3 (PGlite 0.2.0)
--- Dumped by pg_dump version 16.4
-
-SET statement_timeout = 0;
-SET lock_timeout = 0;
-SET idle_in_transaction_session_timeout = 0;
-SET client_encoding = 'SQL_ASCII';
-SET standard_conforming_strings = off;
-SELECT pg_catalog.set_config('search_path', '', false);
-SET check_function_bodies = false;
-SET xmloption = content;
-SET client_min_messages = warning;
-SET escape_string_warning = off;
-SET row_security = off;
-
---
--- Name: meta; Type: SCHEMA; Schema: -; Owner: postgres
---
-
-CREATE SCHEMA meta;
-
-
-ALTER SCHEMA meta OWNER TO postgres;
-
---
--- Name: vector; Type: EXTENSION; Schema: -; Owner: -
---
-
-CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
-
-
---
--- Name: EXTENSION vector; Type: COMMENT; Schema: -; Owner: 
---
-
-COMMENT ON EXTENSION vector IS 'vector data type and ivfflat and hnsw access methods';
-
-
-SET default_tablespace = '';
-
-SET default_table_access_method = heap;
-
---
--- Name: embeddings; Type: TABLE; Schema: meta; Owner: postgres
---
-
-CREATE TABLE meta.embeddings (
-    id bigint NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    content text NOT NULL,
-    embedding public.vector(384) NOT NULL
+create table if not exists public.support_staff (
+  id bigserial primary key,
+  name text not null,
+  email text not null unique,
+  role text not null,
+  senha text not null,
+  foto text default '',
+  created_at timestamptz default now()
 );
 
-
-ALTER TABLE meta.embeddings OWNER TO postgres;
-
---
--- Name: embeddings_id_seq; Type: SEQUENCE; Schema: meta; Owner: postgres
---
-
-ALTER TABLE meta.embeddings ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME meta.embeddings_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
+create table if not exists public.tickets (
+  id text primary key,
+  user_name text not null,
+  user_cpf text default '',
+  user_email text default '',
+  setor text not null,
+  tipo text not null,
+  prioridade text default 'Nao definida',
+  descricao text not null,
+  status text default 'Aberto',
+  responsavel text default '',
+  observacoes text default '[]',
+  historico text default '[]',
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
 );
 
-
---
--- Name: migrations; Type: TABLE; Schema: meta; Owner: postgres
---
-
-CREATE TABLE meta.migrations (
-    version text NOT NULL,
-    name text,
-    applied_at timestamp with time zone DEFAULT now() NOT NULL
+create table if not exists public.notifications (
+  id bigserial primary key,
+  titulo text not null,
+  texto text not null,
+  destinatario text default '',
+  ignorar text default '',
+  read boolean default false,
+  created_at timestamptz default now()
 );
 
-
-ALTER TABLE meta.migrations OWNER TO postgres;
-
---
--- Name: chat_messages; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.chat_messages (
-    id bigint NOT NULL,
-    sender_id bigint,
-    receiver_id bigint,
-    message text NOT NULL,
-    sent_at timestamp with time zone DEFAULT now()
+create table if not exists public.chat_messages (
+  id bigserial primary key,
+  chat_key text not null,
+  autor text not null,
+  texto text not null,
+  is_staff boolean default false,
+  created_at timestamptz default now()
 );
 
-
-ALTER TABLE public.chat_messages OWNER TO postgres;
-
---
--- Name: chat_messages_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
---
-
-ALTER TABLE public.chat_messages ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.chat_messages_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
+create table if not exists public.chats_suporte (
+  cpf text primary key,
+  nome text not null,
+  assunto text default '',
+  observacao text default '',
+  responsavel text default '',
+  encerrado boolean default false,
+  created_at timestamptz default now()
 );
 
-
---
--- Name: notifications; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.notifications (
-    id bigint NOT NULL,
-    user_id bigint,
-    message text NOT NULL,
-    read boolean DEFAULT false,
-    created_at timestamp with time zone DEFAULT now()
+create table if not exists public.app_config (
+  key text primary key,
+  value text not null
 );
 
-
-ALTER TABLE public.notifications OWNER TO postgres;
-
---
--- Name: notifications_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
---
-
-ALTER TABLE public.notifications ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.notifications_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: support_staff; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.support_staff (
-    id bigint NOT NULL,
-    name text NOT NULL,
-    email text NOT NULL,
-    role text NOT NULL,
-    created_at timestamp with time zone DEFAULT now()
-);
-
-
-ALTER TABLE public.support_staff OWNER TO postgres;
-
---
--- Name: support_staff_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
---
-
-ALTER TABLE public.support_staff ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.support_staff_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: tickets; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.tickets (
-    id bigint NOT NULL,
-    user_id bigint,
-    subject text NOT NULL,
-    description text NOT NULL,
-    status text DEFAULT 'open'::text NOT NULL,
-    created_at timestamp with time zone DEFAULT now(),
-    updated_at timestamp with time zone DEFAULT now()
-);
-
-
-ALTER TABLE public.tickets OWNER TO postgres;
-
---
--- Name: tickets_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
---
-
-ALTER TABLE public.tickets ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.tickets_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: users; Type: TABLE; Schema: public; Owner: postgres
---
-
-CREATE TABLE public.users (
-    id bigint NOT NULL,
-    username text NOT NULL,
-    email text NOT NULL,
-    password text NOT NULL,
-    created_at timestamp with time zone DEFAULT now()
-);
-
-
-ALTER TABLE public.users OWNER TO postgres;
-
---
--- Name: users_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
---
-
-ALTER TABLE public.users ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
-    SEQUENCE NAME public.users_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Data for Name: embeddings; Type: TABLE DATA; Schema: meta; Owner: postgres
---
-
-
-
---
--- Data for Name: migrations; Type: TABLE DATA; Schema: meta; Owner: postgres
---
-
-INSERT INTO meta.migrations VALUES ('202407160001', 'embeddings', '2026-05-26 15:51:50.265+00');
-
-
---
--- Data for Name: chat_messages; Type: TABLE DATA; Schema: public; Owner: postgres
---
-
-
-
---
--- Data for Name: notifications; Type: TABLE DATA; Schema: public; Owner: postgres
---
-
-
-
---
--- Data for Name: support_staff; Type: TABLE DATA; Schema: public; Owner: postgres
---
-
-
-
---
--- Data for Name: tickets; Type: TABLE DATA; Schema: public; Owner: postgres
---
-
-
-
---
--- Data for Name: users; Type: TABLE DATA; Schema: public; Owner: postgres
---
-
-
-
---
--- Name: embeddings_id_seq; Type: SEQUENCE SET; Schema: meta; Owner: postgres
---
-
-SELECT pg_catalog.setval('meta.embeddings_id_seq', 1, false);
-
-
---
--- Name: chat_messages_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
---
-
-SELECT pg_catalog.setval('public.chat_messages_id_seq', 1, false);
-
-
---
--- Name: notifications_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
---
-
-SELECT pg_catalog.setval('public.notifications_id_seq', 1, false);
-
-
---
--- Name: support_staff_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
---
-
-SELECT pg_catalog.setval('public.support_staff_id_seq', 1, false);
-
-
---
--- Name: tickets_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
---
-
-SELECT pg_catalog.setval('public.tickets_id_seq', 1, false);
-
-
---
--- Name: users_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
---
-
-SELECT pg_catalog.setval('public.users_id_seq', 1, false);
-
-
---
--- Name: embeddings embeddings_pkey; Type: CONSTRAINT; Schema: meta; Owner: postgres
---
-
-ALTER TABLE ONLY meta.embeddings
-    ADD CONSTRAINT embeddings_pkey PRIMARY KEY (id);
-
-
---
--- Name: migrations migrations_pkey; Type: CONSTRAINT; Schema: meta; Owner: postgres
---
-
-ALTER TABLE ONLY meta.migrations
-    ADD CONSTRAINT migrations_pkey PRIMARY KEY (version);
-
-
---
--- Name: chat_messages chat_messages_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.chat_messages
-    ADD CONSTRAINT chat_messages_pkey PRIMARY KEY (id);
-
-
---
--- Name: notifications notifications_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.notifications
-    ADD CONSTRAINT notifications_pkey PRIMARY KEY (id);
-
-
---
--- Name: support_staff support_staff_email_key; Type: CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.support_staff
-    ADD CONSTRAINT support_staff_email_key UNIQUE (email);
-
-
---
--- Name: support_staff support_staff_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.support_staff
-    ADD CONSTRAINT support_staff_pkey PRIMARY KEY (id);
-
-
---
--- Name: tickets tickets_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.tickets
-    ADD CONSTRAINT tickets_pkey PRIMARY KEY (id);
-
-
---
--- Name: users users_email_key; Type: CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.users
-    ADD CONSTRAINT users_email_key UNIQUE (email);
-
-
---
--- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.users
-    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
-
-
---
--- Name: users users_username_key; Type: CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.users
-    ADD CONSTRAINT users_username_key UNIQUE (username);
-
-
---
--- Name: chat_messages chat_messages_receiver_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.chat_messages
-    ADD CONSTRAINT chat_messages_receiver_id_fkey FOREIGN KEY (receiver_id) REFERENCES public.users(id);
-
-
---
--- Name: chat_messages chat_messages_sender_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.chat_messages
-    ADD CONSTRAINT chat_messages_sender_id_fkey FOREIGN KEY (sender_id) REFERENCES public.users(id);
-
-
---
--- Name: notifications notifications_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.notifications
-    ADD CONSTRAINT notifications_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
-
-
---
--- Name: tickets tickets_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.tickets
-    ADD CONSTRAINT tickets_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
-
-
---
--- PostgreSQL database dump complete
---
-
+create index if not exists idx_tickets_created_at on public.tickets (created_at);
+create index if not exists idx_tickets_status on public.tickets (status);
+create index if not exists idx_notifications_created_at on public.notifications (created_at desc);
+create index if not exists idx_chat_messages_key_created on public.chat_messages (chat_key, created_at);
+create index if not exists idx_chats_suporte_encerrado on public.chats_suporte (encerrado);
+
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_tickets_updated_at on public.tickets;
+create trigger trg_tickets_updated_at
+before update on public.tickets
+for each row execute function public.set_updated_at();
+
+-- O site atual nao tem login real do Supabase, entao estas policies liberam
+-- leitura/escrita com a anon key publica. Para uso interno isso sincroniza tudo;
+-- para producao aberta, coloque autenticacao antes de expor o link publicamente.
+alter table public.support_staff enable row level security;
+alter table public.tickets enable row level security;
+alter table public.notifications enable row level security;
+alter table public.chat_messages enable row level security;
+alter table public.chats_suporte enable row level security;
+alter table public.app_config enable row level security;
+
+drop policy if exists "helpdesk_public_all_support_staff" on public.support_staff;
+create policy "helpdesk_public_all_support_staff" on public.support_staff
+for all using (true) with check (true);
+
+drop policy if exists "helpdesk_public_all_tickets" on public.tickets;
+create policy "helpdesk_public_all_tickets" on public.tickets
+for all using (true) with check (true);
+
+drop policy if exists "helpdesk_public_all_notifications" on public.notifications;
+create policy "helpdesk_public_all_notifications" on public.notifications
+for all using (true) with check (true);
+
+drop policy if exists "helpdesk_public_all_chat_messages" on public.chat_messages;
+create policy "helpdesk_public_all_chat_messages" on public.chat_messages
+for all using (true) with check (true);
+
+drop policy if exists "helpdesk_public_all_chats_suporte" on public.chats_suporte;
+create policy "helpdesk_public_all_chats_suporte" on public.chats_suporte
+for all using (true) with check (true);
+
+drop policy if exists "helpdesk_public_all_app_config" on public.app_config;
+create policy "helpdesk_public_all_app_config" on public.app_config
+for all using (true) with check (true);
