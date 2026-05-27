@@ -93,12 +93,14 @@ alter table public.chats_suporte
 
 create index if not exists idx_tickets_created_at on public.tickets (created_at);
 create index if not exists idx_tickets_status on public.tickets (status);
+create index if not exists idx_tickets_client_id on public.tickets (client_id);
 create index if not exists idx_clients_cpf on public.clients (cpf);
 create index if not exists idx_clients_email on public.clients (email);
 create index if not exists idx_client_activity_client_created on public.client_activity_log (client_id, created_at desc);
 create index if not exists idx_notifications_created_at on public.notifications (created_at desc);
 create index if not exists idx_chat_messages_key_created on public.chat_messages (chat_key, created_at);
 create index if not exists idx_chats_suporte_encerrado on public.chats_suporte (encerrado);
+create index if not exists idx_chats_suporte_client_id on public.chats_suporte (client_id);
 
 insert into public.support_staff (name, email, role, senha, foto) values
   ('Administrador', 'admin@helpdesk.local', 'Admin', 'admin', ''),
@@ -113,6 +115,7 @@ on conflict (email) do nothing;
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
+set search_path = public
 as $$
 begin
   new.updated_at = now();
