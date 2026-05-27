@@ -12,7 +12,7 @@ function validateSupabaseConfig() {
   if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(SUPABASE_URL)) {
     return 'URL do Supabase invalida';
   }
-  if (!SUPABASE_ANON_KEY || SUPABASE_ANON_KEY.includes('COLE_AQUI')) {
+  if (!SUPABASE_ANON_KEY || SUPABASE_ANON_KEY.includes('eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd6bXZ4Znlhd3ZzdXF6dmRtZWN3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4NDMzNjEsImV4cCI6MjA5NTQxOTM2MX0.y8H9XhVBO7bAY4L5kJufi-dM1Kp7cff-rAvBw27zkzU')) {
     return 'Anon key do Supabase nao configurada';
   }
   if (!/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(SUPABASE_ANON_KEY)) {
