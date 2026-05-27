@@ -76,6 +76,9 @@
         <i class="ti ti-user-circle"></i>
         <span>Entrar Cliente</span>
       </button>
+      <button class="ctrl-btn account-settings-btn" id="accountSettingsBtn" type="button" title="Configurações da conta" aria-label="Configurações da conta">
+        <i class="ti ti-settings"></i>
+      </button>
       <button class="ctrl-btn req-admin" id="notifBtn" title="Notificações" aria-label="Notificações">
         <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
         <span class="notif-badge" id="notifBadge" style="display:none">0</span>
@@ -795,6 +798,32 @@
       <button type="button" class="btn-ghost full" id="btnContinuarSemLogin">Continuar sem login</button>
       <button type="button" class="btn-link" data-goto="painel" id="btnIrLoginFuncionario">Sou funcionario</button>
     </div>
+  </div>
+</div>
+
+<div class="settings-overlay" id="settingsOverlay" aria-hidden="true">
+  <div class="settings-panel">
+    <aside class="settings-sidebar">
+      <div class="settings-title-row">
+        <h2>Configurações</h2>
+        <button class="modal-close" id="settingsClose" type="button" aria-label="Fechar">&times;</button>
+      </div>
+      <label class="settings-search">
+        <i class="ti ti-search"></i>
+        <input type="text" id="settingsSearch" placeholder="Pesquisar configurações" autocomplete="off"/>
+      </label>
+      <div class="settings-profile" id="settingsProfile"></div>
+      <nav class="settings-menu" id="settingsMenu" aria-label="Configurações da conta"></nav>
+    </aside>
+    <section class="settings-detail">
+      <div class="settings-detail-head">
+        <div>
+          <span id="settingsDetailKicker">Conta</span>
+          <h3 id="settingsDetailTitle">Geral</h3>
+        </div>
+      </div>
+      <div class="settings-content" id="settingsContent"></div>
+    </section>
   </div>
 </div>
 

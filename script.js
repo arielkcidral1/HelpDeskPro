@@ -295,6 +295,23 @@ async function dbCreateClient(cliente) {
   return rowToClient(data);
 }
 
+async function dbUpdateClient(cliente) {
+  if (!isDBReady()) throw new Error('Banco Supabase indisponivel');
+  if (!clientSchemaReady) throw new Error('Schema de clientes nao instalado');
+  const { data, error } = await supabase
+    .from('clients')
+    .update({
+      name: cliente.nome,
+      email: normalizeEmail(cliente.email),
+      senha: cliente.senha
+    })
+    .eq('id', cliente.id)
+    .select('*')
+    .single();
+  if (error) throw error;
+  return rowToClient(data);
+}
+
 async function dbAddClientActivity(action, details = '', client = clienteLogado) {
   if (!isDBReady()) return;
   if (!clientSchemaReady) return;
@@ -389,6 +406,8 @@ let CLIENTES = [];
 let clienteLogado = null;
 let clientAuthRequired = false;
 let clientAuthShownOnEntry = false;
+let currentAccountPrefs = {};
+let settingsActiveSection = 'geral';
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 function gerarId() {
@@ -447,6 +466,12 @@ async function addNotif(titulo, texto, options = {}) {
 function renderNotifs() {
   const badge = document.getElementById('notifBadge');
   const list  = document.getElementById('notifList');
+
+  if (getCurrentAccount() && currentAccountPrefs.notificationsEnabled === false) {
+    badge.style.display = 'none';
+    list.innerHTML = '<p class="notif-empty">Notificações pausadas nas configurações.</p>';
+    return;
+  }
 
   let myNotifs = notificacoes;
   if (logado && funcLogado) {
@@ -565,11 +590,20 @@ function preencherDadosCliente() {
     const el = document.getElementById(id);
     if (el) el.value = value;
   });
+  const setor = document.getElementById('fc-setor');
+  if (setor && currentAccountPrefs.autoFillClientData !== false && currentAccountPrefs.defaultSetor) {
+    setor.value = currentAccountPrefs.defaultSetor;
+  }
 }
 
 function setClienteLogado(cliente) {
   clienteLogado = cliente;
   updateClientSessionUI();
+  updateAccountSettingsButton();
+  loadCurrentAccountPrefs().then(() => {
+    preencherDadosCliente();
+    renderNotifs();
+  });
   preencherDadosCliente();
   if (document.querySelector('.page.active')?.id === 'page-meus') renderMeusChamados();
   if (document.querySelector('.page.active')?.id === 'page-suporte') renderSuportePage();
@@ -584,6 +618,487 @@ function findClienteByCredential(credential, senha) {
       (email && normalizeEmail(c.email) === email)
     )
   );
+}
+
+const DEFAULT_ACCOUNT_PREFS = {
+  notificationsEnabled: true,
+  securityNotices: true,
+  defaultPage: 'home',
+  defaultSetor: '',
+  autoFillClientData: true,
+  privacyMode: false,
+  temporarySupportMessages: false,
+  enterToSend: true,
+  compactChat: false,
+  panelDefaultTab: 'meus'
+};
+
+const SETTINGS_ITEMS = [
+  { id: 'geral', icon: 'ti ti-device-desktop', title: 'Geral', desc: 'Tema, início e preferências' },
+  { id: 'conta', icon: 'ti ti-key', title: 'Conta', desc: 'Dados da conta e segurança' },
+  { id: 'privacidade', icon: 'ti ti-lock', title: 'Privacidade', desc: 'Exibição de dados e histórico' },
+  { id: 'chamados', icon: 'ti ti-clipboard-list', title: 'Chamados', desc: 'Padrões para solicitações' },
+  { id: 'suporte', icon: 'ti ti-message-circle', title: 'Suporte', desc: 'Preferências de atendimento' },
+  { id: 'notificacoes', icon: 'ti ti-bell', title: 'Notificações', desc: 'Alertas do sistema' },
+  { id: 'atalhos', icon: 'ti ti-keyboard', title: 'Atalhos do teclado', desc: 'Ações rápidas' },
+  { id: 'ajuda', icon: 'ti ti-help-circle', title: 'Ajuda e feedback', desc: 'Central de ajuda e privacidade' },
+  { id: 'desconectar', icon: 'ti ti-logout', title: 'Desconectar', desc: '', disconnect: true }
+];
+
+function escapeHtml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function getCurrentAccount() {
+  if (logado && funcLogado) {
+    return {
+      type: 'staff',
+      key: funcLogado.usuario,
+      name: funcLogado.nome,
+      subtitle: `${funcLogado.role} · ${funcLogado.usuario}`,
+      avatar: funcLogado.foto || '',
+      initials: (funcLogado.nome || 'F').charAt(0).toUpperCase()
+    };
+  }
+  if (clienteLogado) {
+    return {
+      type: 'client',
+      key: clienteLogado.id,
+      name: clienteLogado.nome,
+      subtitle: clienteLogado.email,
+      avatar: '',
+      initials: (clienteLogado.nome || 'C').charAt(0).toUpperCase()
+    };
+  }
+  return null;
+}
+
+function getAccountPrefsKey(account = getCurrentAccount()) {
+  if (!account) return '';
+  return `account_prefs_${account.type}_${account.key}`;
+}
+
+async function loadCurrentAccountPrefs() {
+  const key = getAccountPrefsKey();
+  if (!key) {
+    currentAccountPrefs = { ...DEFAULT_ACCOUNT_PREFS };
+    return currentAccountPrefs;
+  }
+  const raw = await dbGetConfig(key, '{}');
+  try {
+    currentAccountPrefs = { ...DEFAULT_ACCOUNT_PREFS, ...(JSON.parse(raw || '{}')) };
+  } catch(e) {
+    currentAccountPrefs = { ...DEFAULT_ACCOUNT_PREFS };
+  }
+  applyAccountPrefsToUI();
+  return currentAccountPrefs;
+}
+
+async function saveCurrentAccountPrefs(partial) {
+  currentAccountPrefs = { ...DEFAULT_ACCOUNT_PREFS, ...currentAccountPrefs, ...partial };
+  const key = getAccountPrefsKey();
+  if (key) await dbSetConfig(key, JSON.stringify(currentAccountPrefs));
+  applyAccountPrefsToUI();
+  renderNotifs();
+}
+
+function applyAccountPrefsToUI() {
+  document.body.classList.toggle('chat-compact', Boolean(currentAccountPrefs.compactChat));
+}
+
+function updateAccountSettingsButton() {
+  const btn = document.getElementById('accountSettingsBtn');
+  if (!btn) return;
+  const account = getCurrentAccount();
+  btn.title = account ? `Configurações de ${account.name}` : 'Configurações da conta';
+}
+
+async function openAccountSettings(section = 'geral') {
+  const account = getCurrentAccount();
+  if (!account) {
+    showClientAuth('login', {
+      required: true,
+      title: 'Login necessário',
+      copy: 'Entre como cliente ou funcionário para configurar sua conta.'
+    });
+    return;
+  }
+  settingsActiveSection = section;
+  await loadCurrentAccountPrefs();
+  const search = document.getElementById('settingsSearch');
+  if (search) search.value = '';
+  renderAccountSettings();
+  const overlay = document.getElementById('settingsOverlay');
+  overlay.classList.add('open');
+  overlay.setAttribute('aria-hidden', 'false');
+  setTimeout(() => document.getElementById('settingsSearch')?.focus(), 80);
+}
+
+function closeAccountSettings() {
+  const overlay = document.getElementById('settingsOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('open');
+  overlay.setAttribute('aria-hidden', 'true');
+}
+
+function renderAccountSettings() {
+  const account = getCurrentAccount();
+  if (!account) return;
+
+  document.getElementById('settingsProfile').innerHTML = `
+    <div class="settings-avatar">${account.avatar ? `<img src="${escapeHtml(account.avatar)}" alt="${escapeHtml(account.name)}">` : escapeHtml(account.initials)}</div>
+    <div>
+      <strong>${escapeHtml(account.name)}</strong>
+      <span>${escapeHtml(account.subtitle)}</span>
+    </div>`;
+
+  renderSettingsMenu();
+  renderSettingsContent();
+}
+
+function renderSettingsMenu() {
+  const query = normalizeEmail(document.getElementById('settingsSearch')?.value || '');
+  const menu = document.getElementById('settingsMenu');
+  const items = SETTINGS_ITEMS.filter(item => {
+    if (!query) return true;
+    return `${item.title} ${item.desc}`.toLowerCase().includes(query);
+  });
+
+  menu.innerHTML = items.map(item => `
+    <button type="button" class="settings-menu-item ${item.disconnect ? 'disconnect' : ''} ${settingsActiveSection === item.id ? 'active' : ''}" data-settings-section="${item.id}">
+      <i class="${item.icon}"></i>
+      <span>
+        <span class="settings-menu-title">${item.title}</span>
+        ${item.desc ? `<span class="settings-menu-desc">${item.desc}</span>` : ''}
+      </span>
+    </button>`).join('');
+
+  menu.querySelectorAll('[data-settings-section]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.settingsSection;
+      if (id === 'desconectar') {
+        handleSettingsDisconnect();
+        return;
+      }
+      settingsActiveSection = id;
+      renderSettingsMenu();
+      renderSettingsContent();
+    });
+  });
+}
+
+function renderSettingsContent() {
+  const item = SETTINGS_ITEMS.find(x => x.id === settingsActiveSection) || SETTINGS_ITEMS[0];
+  document.getElementById('settingsDetailKicker').textContent = getCurrentAccount()?.type === 'staff' ? 'Funcionário' : 'Cliente';
+  document.getElementById('settingsDetailTitle').textContent = item.title;
+
+  const content = document.getElementById('settingsContent');
+  const renderers = {
+    geral: renderSettingsGeral,
+    conta: renderSettingsConta,
+    privacidade: renderSettingsPrivacidade,
+    chamados: renderSettingsChamados,
+    suporte: renderSettingsSuporte,
+    notificacoes: renderSettingsNotificacoes,
+    atalhos: renderSettingsAtalhos,
+    ajuda: renderSettingsAjuda
+  };
+  content.innerHTML = (renderers[item.id] || renderSettingsGeral)();
+  bindSettingsContentEvents(item.id);
+}
+
+function renderSettingsGeral() {
+  const isDark = document.body.classList.contains('dark-mode');
+  return `
+    <div class="settings-section-card">
+      <h4>Aparência</h4>
+      <p>Escolha como o HelpDesk deve aparecer neste navegador.</p>
+      <div class="settings-actions">
+        <button type="button" class="${isDark ? 'btn-ghost' : 'btn-primary'} sm" data-theme-choice="light-mode"><i class="ti ti-sun"></i> Claro</button>
+        <button type="button" class="${isDark ? 'btn-primary' : 'btn-ghost'} sm" data-theme-choice="dark-mode"><i class="ti ti-moon"></i> Escuro</button>
+      </div>
+    </div>
+    <div class="settings-section-card">
+      <h4>Ao entrar no sistema</h4>
+      <p>Defina a página preferida para retomar o trabalho com mais rapidez.</p>
+      <div class="settings-form-grid">
+        <div class="form-group full-width">
+          <label for="settingsDefaultPage">Página padrão</label>
+          <select id="settingsDefaultPage">
+            ${['home','abrir','meus','suporte','painel'].map(p => `<option value="${p}" ${currentAccountPrefs.defaultPage === p ? 'selected' : ''}>${{home:'Home',abrir:'Abrir chamado',meus:'Meus chamados',suporte:'Suporte',painel:'Painel funcionário'}[p]}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="settings-actions"><button type="button" class="btn-primary sm" id="saveGeneralPrefs">Salvar preferências</button></div>
+    </div>`;
+}
+
+function renderSettingsConta() {
+  if (logado && funcLogado) {
+    return `
+      <div class="settings-section-card">
+        <h4>Dados do funcionário</h4>
+        <p>O login e o cargo são controlados pela área Equipe. Aqui você pode alterar sua própria senha.</p>
+        <form id="settingsStaffAccountForm" class="settings-form-grid">
+          <div class="form-group"><label>Nome</label><input type="text" value="${escapeHtml(funcLogado.nome)}" disabled></div>
+          <div class="form-group"><label>Login</label><input type="text" value="${escapeHtml(funcLogado.usuario)}" disabled></div>
+          <div class="form-group"><label>Cargo</label><input type="text" value="${escapeHtml(funcLogado.role)}" disabled></div>
+          <div class="form-group"><label for="settingsStaffPass">Nova senha</label><input type="password" id="settingsStaffPass" placeholder="Digite a nova senha"></div>
+          <div class="form-group full-width"><span class="login-error" id="settingsAccountError"></span></div>
+          <div class="settings-actions"><button type="submit" class="btn-primary sm">Salvar senha</button></div>
+        </form>
+      </div>`;
+  }
+
+  return `
+    <div class="settings-section-card">
+      <h4>Dados do cliente</h4>
+      <p>Essas informações são usadas para preencher chamados e atendimentos de suporte.</p>
+      <form id="settingsClientAccountForm" class="settings-form-grid">
+        <div class="form-group"><label for="settingsClientName">Nome completo</label><input type="text" id="settingsClientName" value="${escapeHtml(clienteLogado?.nome || '')}"></div>
+        <div class="form-group"><label>CPF</label><input type="text" value="${formatCpf(clienteLogado?.cpf || '')}" disabled></div>
+        <div class="form-group"><label for="settingsClientEmail">E-mail</label><input type="email" id="settingsClientEmail" value="${escapeHtml(clienteLogado?.email || '')}"></div>
+        <div class="form-group"><label for="settingsClientPass">Nova senha</label><input type="password" id="settingsClientPass" placeholder="Deixe em branco para manter"></div>
+        <div class="form-group full-width"><span class="login-error" id="settingsAccountError"></span></div>
+        <div class="settings-actions"><button type="submit" class="btn-primary sm">Salvar alterações</button></div>
+      </form>
+    </div>`;
+}
+
+function renderSettingsPrivacidade() {
+  return `
+    <div class="settings-section-card">
+      <h4>Privacidade</h4>
+      <p>Controle como alguns dados pessoais aparecem e como o sistema registra suas preferências.</p>
+      ${settingsSwitchRow('privacyMode', 'Modo discreto', 'Oculta dados sensíveis nas prévias sempre que possível.', currentAccountPrefs.privacyMode)}
+      ${settingsSwitchRow('temporarySupportMessages', 'Mensagens temporárias no suporte', 'Marca a preferência para atendimentos com histórico mais curto.', currentAccountPrefs.temporarySupportMessages)}
+    </div>`;
+}
+
+function renderSettingsChamados() {
+  if (logado && funcLogado) {
+    return `
+      <div class="settings-section-card">
+        <h4>Painel de chamados</h4>
+        <p>Escolha qual visão fica selecionada por padrão no painel do funcionário.</p>
+        <div class="settings-form-grid">
+          <div class="form-group full-width">
+            <label for="settingsPanelDefaultTab">Visão padrão</label>
+            <select id="settingsPanelDefaultTab">
+              <option value="meus" ${currentAccountPrefs.panelDefaultTab === 'meus' ? 'selected' : ''}>Meus atendimentos</option>
+              <option value="todos" ${currentAccountPrefs.panelDefaultTab === 'todos' ? 'selected' : ''}>Visão geral</option>
+            </select>
+          </div>
+        </div>
+        <div class="settings-actions"><button type="button" class="btn-primary sm" id="saveTicketPrefs">Salvar</button></div>
+      </div>`;
+  }
+
+  const setores = ['', 'TI','Recursos Humanos','Financeiro','Administrativo','Comercial','Marketing','Redes','Segurança','Infraestrutura','Outro'];
+  return `
+    <div class="settings-section-card">
+      <h4>Chamados do cliente</h4>
+      <p>Configure padrões usados ao abrir novas solicitações.</p>
+      <div class="settings-form-grid">
+        <div class="form-group full-width">
+          <label for="settingsDefaultSetor">Setor padrão</label>
+          <select id="settingsDefaultSetor">
+            ${setores.map(s => `<option value="${s}" ${currentAccountPrefs.defaultSetor === s ? 'selected' : ''}>${s || 'Selecionar manualmente'}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      ${settingsSwitchRow('autoFillClientData', 'Preencher meus dados automaticamente', 'Usa nome, CPF e e-mail da conta nos formulários.', currentAccountPrefs.autoFillClientData)}
+      <div class="settings-actions"><button type="button" class="btn-primary sm" id="saveTicketPrefs">Salvar</button></div>
+    </div>`;
+}
+
+function renderSettingsSuporte() {
+  return `
+    <div class="settings-section-card">
+      <h4>Atendimento e conversas</h4>
+      <p>Ajuste como as conversas de suporte se comportam neste navegador.</p>
+      ${settingsSwitchRow('enterToSend', 'Enter envia mensagem', 'Use Shift + Enter para quebrar linha.', currentAccountPrefs.enterToSend)}
+      ${settingsSwitchRow('compactChat', 'Modo compacto de conversa', 'Reduz espaçamentos para ler mais mensagens na tela.', currentAccountPrefs.compactChat)}
+    </div>`;
+}
+
+function renderSettingsNotificacoes() {
+  return `
+    <div class="settings-section-card">
+      <h4>Alertas</h4>
+      <p>Defina quais notificações do HelpDesk devem ficar visíveis para esta conta.</p>
+      ${settingsSwitchRow('notificationsEnabled', 'Mostrar notificações', 'Exibe o contador e a lista de notificações.', currentAccountPrefs.notificationsEnabled)}
+      ${settingsSwitchRow('securityNotices', 'Avisos de segurança', 'Mostra avisos sobre login, senha e alterações importantes.', currentAccountPrefs.securityNotices)}
+    </div>`;
+}
+
+function renderSettingsAtalhos() {
+  return `
+    <div class="settings-section-card">
+      <h4>Atalhos úteis</h4>
+      <p>Referência rápida para navegar pelo sistema.</p>
+      <div class="settings-shortcuts">
+        <span>Abrir chamado</span><kbd>Alt + A</kbd>
+        <span>Meus chamados</span><kbd>Alt + M</kbd>
+        <span>Suporte</span><kbd>Alt + S</kbd>
+        <span>Alternar tema</span><kbd>Alt + T</kbd>
+      </div>
+      <p class="settings-muted">Os atalhos são informativos por enquanto; os botões da interface continuam sendo o caminho principal.</p>
+    </div>`;
+}
+
+function renderSettingsAjuda() {
+  return `
+    <div class="settings-section-card">
+      <h4>Ajuda e feedback</h4>
+      <p>Em caso de dúvida, abra um chamado ou use o Suporte Direto. Funcionários podem acompanhar solicitações no Painel Funcionário.</p>
+      <div class="settings-actions">
+        <button type="button" class="btn-primary sm" data-settings-goto="suporte"><i class="ti ti-message"></i> Ir para suporte</button>
+        <button type="button" class="btn-ghost sm" data-settings-goto="sobre"><i class="ti ti-info-circle"></i> Sobre o sistema</button>
+      </div>
+      <p class="settings-muted">Política de privacidade: os dados informados são usados para identificar chamados, atendimentos e histórico operacional do HelpDesk.</p>
+    </div>`;
+}
+
+function settingsSwitchRow(key, title, desc, checked) {
+  return `
+    <div class="settings-row">
+      <span><span class="settings-row-title">${title}</span><span class="settings-row-desc">${desc}</span></span>
+      <label class="settings-switch">
+        <input type="checkbox" data-pref-key="${key}" ${checked ? 'checked' : ''}>
+        <span class="settings-slider"></span>
+      </label>
+    </div>`;
+}
+
+function bindSettingsContentEvents(section) {
+  document.querySelectorAll('[data-pref-key]').forEach(input => {
+    input.addEventListener('change', () => saveCurrentAccountPrefs({ [input.dataset.prefKey]: input.checked }));
+  });
+
+  document.querySelectorAll('[data-theme-choice]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const theme = btn.dataset.themeChoice;
+      applyThemeClass(theme);
+      await dbSetConfig('theme', theme);
+      await saveCurrentAccountPrefs({ theme });
+      renderSettingsContent();
+    });
+  });
+
+  document.getElementById('saveGeneralPrefs')?.addEventListener('click', async () => {
+    await saveCurrentAccountPrefs({ defaultPage: document.getElementById('settingsDefaultPage').value });
+    toast('success', 'Preferências salvas', 'Configurações gerais atualizadas.');
+  });
+
+  document.getElementById('saveTicketPrefs')?.addEventListener('click', async () => {
+    const payload = {};
+    const setor = document.getElementById('settingsDefaultSetor');
+    const tab = document.getElementById('settingsPanelDefaultTab');
+    if (setor) payload.defaultSetor = setor.value;
+    if (tab) payload.panelDefaultTab = tab.value;
+    await saveCurrentAccountPrefs(payload);
+    toast('success', 'Preferências salvas', 'Configurações de chamados atualizadas.');
+  });
+
+  document.getElementById('settingsClientAccountForm')?.addEventListener('submit', saveClientAccountSettings);
+  document.getElementById('settingsStaffAccountForm')?.addEventListener('submit', saveStaffAccountSettings);
+
+  document.querySelectorAll('[data-settings-goto]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      closeAccountSettings();
+      irPara(btn.dataset.settingsGoto);
+    });
+  });
+}
+
+async function saveClientAccountSettings(e) {
+  e.preventDefault();
+  const err = document.getElementById('settingsAccountError');
+  err.textContent = '';
+  const nome = document.getElementById('settingsClientName').value.trim();
+  const email = normalizeEmail(document.getElementById('settingsClientEmail').value);
+  const senha = document.getElementById('settingsClientPass').value;
+
+  if (!nome || !/\S+@\S+\.\S+/.test(email)) {
+    err.textContent = 'Informe nome e e-mail válidos.';
+    return;
+  }
+  if (CLIENTES.some(c => String(c.id) !== String(clienteLogado.id) && normalizeEmail(c.email) === email)) {
+    err.textContent = 'Este e-mail já está em uso por outro cliente.';
+    return;
+  }
+
+  try {
+    const updated = await dbUpdateClient({ ...clienteLogado, nome, email, senha: senha || clienteLogado.senha });
+    const idx = CLIENTES.findIndex(c => String(c.id) === String(updated.id));
+    if (idx !== -1) CLIENTES[idx] = updated;
+    setClienteLogado(updated);
+    await dbAddClientActivity('conta_cliente_atualizada', 'Cliente atualizou dados da conta.', updated);
+    toast('success', 'Conta atualizada', 'Seus dados foram salvos.');
+    renderAccountSettings();
+  } catch(error) {
+    console.error('saveClientAccountSettings error:', error);
+    err.textContent = 'Não foi possível salvar. Verifique o e-mail informado.';
+  }
+}
+
+async function saveStaffAccountSettings(e) {
+  e.preventDefault();
+  const err = document.getElementById('settingsAccountError');
+  err.textContent = '';
+  const senha = document.getElementById('settingsStaffPass').value;
+  if (!senha) {
+    err.textContent = 'Digite uma nova senha.';
+    return;
+  }
+
+  const idx = FUNCIONARIOS.findIndex(f => f.usuario === funcLogado.usuario);
+  if (idx !== -1) {
+    FUNCIONARIOS[idx] = { ...FUNCIONARIOS[idx], senha };
+    funcLogado = FUNCIONARIOS[idx];
+    await dbSaveStaff(funcLogado);
+    toast('success', 'Senha atualizada', 'Sua senha foi salva.');
+    renderAccountSettings();
+  }
+}
+
+async function logoutCliente(showToast = true) {
+  if (clienteLogado) await dbAddClientActivity('logout_cliente', 'Cliente saiu da conta.');
+  clienteLogado = null;
+  updateClientSessionUI();
+  updateAccountSettingsButton();
+  if (showToast) toast('info', 'Cliente desconectado', 'Você continua navegando sem login de cliente.');
+  if (document.querySelector('.page.active')?.id === 'page-meus') irPara('home');
+}
+
+function logoutFuncionario(showToast = false) {
+  logado = false;
+  funcLogado = null;
+  document.getElementById('painelLogin').style.display     = '';
+  document.getElementById('painelDashboard').style.display = 'none';
+  document.getElementById('login-user').value = '';
+  document.getElementById('login-pass').value = '';
+  document.body.classList.remove('is-logged-in', 'is-admin');
+  updateAccountSettingsButton();
+  renderNotifs();
+  if (showToast) toast('info', 'Funcionário desconectado', 'Sessão encerrada com sucesso.');
+  const activePage = document.querySelector('.page.active')?.id;
+  if (['page-equipe','page-relatorios','page-suporte','page-chat'].includes(activePage)) irPara('home');
+}
+
+async function handleSettingsDisconnect() {
+  const account = getCurrentAccount();
+  if (!account) return;
+  if (!confirm(`Desconectar ${account.name}?`)) return;
+  closeAccountSettings();
+  if (account.type === 'staff') logoutFuncionario(true);
+  else await logoutCliente(true);
 }
 
 function irPara(pagina) {
@@ -900,14 +1415,16 @@ document.getElementById('btnIrLoginFuncionario')?.addEventListener('click', () =
   closeClientAuth();
 });
 
+document.getElementById('accountSettingsBtn')?.addEventListener('click', () => openAccountSettings('geral'));
+document.getElementById('settingsClose')?.addEventListener('click', closeAccountSettings);
+document.getElementById('settingsOverlay')?.addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeAccountSettings();
+});
+document.getElementById('settingsSearch')?.addEventListener('input', renderSettingsMenu);
+
 document.getElementById('clientSessionBtn')?.addEventListener('click', async () => {
   if (clienteLogado) {
-    if (!confirm(`Sair da conta de cliente ${clienteLogado.nome}?`)) return;
-    await dbAddClientActivity('logout_cliente', 'Cliente saiu da conta.');
-    clienteLogado = null;
-    updateClientSessionUI();
-    toast('info', 'Cliente desconectado', 'Voce continua navegando sem login de cliente.');
-    if (document.querySelector('.page.active')?.id === 'page-meus') renderMeusChamados();
+    openAccountSettings('geral');
     return;
   }
   showClientAuth('login');
@@ -1016,6 +1533,7 @@ function entrarPainel() {
   document.getElementById('empRole').textContent = funcLogado.role;
 
   document.body.classList.add('is-logged-in');
+  updateAccountSettingsButton();
   if (funcLogado.usuario === 'admin' || funcLogado.role.toLowerCase().includes('gerente')) {
     document.body.classList.add('is-admin');
     document.getElementById('tabTodosAtend').style.display = 'inline-flex';
@@ -1032,6 +1550,22 @@ function entrarPainel() {
   atualizarStatsEmp();
   renderPainelLista();
   renderNotifs();
+  loadCurrentAccountPrefs().then(() => {
+    const isGestor = funcLogado && (funcLogado.usuario === 'admin' || funcLogado.role.toLowerCase().includes('gerente'));
+    if (isGestor && currentAccountPrefs.panelDefaultTab === 'meus') {
+      painelTab = 'meus';
+      document.getElementById('tabMeusAtend').classList.add('active');
+      document.getElementById('tabTodosAtend').classList.remove('active');
+    }
+    if (isGestor && currentAccountPrefs.panelDefaultTab === 'todos') {
+      painelTab = 'todos';
+      document.getElementById('tabTodosAtend').classList.add('active');
+      document.getElementById('tabMeusAtend').classList.remove('active');
+    }
+    atualizarStatsEmp();
+    renderPainelLista();
+    renderNotifs();
+  });
 }
 
 function atualizarStatsEmp() {
@@ -1045,16 +1579,7 @@ function atualizarStatsEmp() {
 }
 
 document.getElementById('btnLogout')?.addEventListener('click', () => {
-  logado = false;
-  funcLogado = null;
-  document.getElementById('painelLogin').style.display     = '';
-  document.getElementById('painelDashboard').style.display = 'none';
-  document.getElementById('login-user').value = '';
-  document.getElementById('login-pass').value = '';
-  document.body.classList.remove('is-logged-in', 'is-admin');
-  renderNotifs();
-  const activePage = document.querySelector('.page.active')?.id;
-  if (['page-equipe','page-relatorios','page-suporte','page-chat'].includes(activePage)) irPara('home');
+  logoutFuncionario();
 });
 
 document.getElementById('tabMeusAtend')?.addEventListener('click', (e) => {
@@ -1602,7 +2127,7 @@ window.encerrarChatAdmin = async function() {
 
 setTimeout(() => {
   document.getElementById('chatInput')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); window.enviarMsgChat(); }
+    if (currentAccountPrefs.enterToSend !== false && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); window.enviarMsgChat(); }
   });
 }, 100);
 
@@ -1769,7 +2294,7 @@ window.enviarMsgChatInterno = async function() {
 
 setTimeout(() => {
   document.getElementById('chatInternoInput')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); window.enviarMsgChatInterno(); }
+    if (currentAccountPrefs.enterToSend !== false && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); window.enviarMsgChatInterno(); }
   });
 }, 100);
 
@@ -1895,6 +2420,22 @@ document.addEventListener('click', e => {
 });
 
 // Real-time Polling ────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (!e.altKey || e.ctrlKey || e.metaKey) return;
+  const tag = document.activeElement?.tagName;
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)) return;
+  const key = e.key.toLowerCase();
+  const shortcuts = { a: 'abrir', m: 'meus', s: 'suporte' };
+  if (shortcuts[key]) {
+    e.preventDefault();
+    irPara(shortcuts[key]);
+  }
+  if (key === 't') {
+    e.preventDefault();
+    document.getElementById('themeToggle')?.click();
+  }
+});
+
 let _pollInterval = null;
 let _lastTicketCount = 0;
 let _lastNotifCount = 0;
@@ -1992,6 +2533,7 @@ function showDBStatus(ok) {
   atualizarHome();
   renderEquipe();
   updateClientSessionUI();
+  updateAccountSettingsButton();
 
   if (!clientAuthShownOnEntry) {
     clientAuthShownOnEntry = true;
