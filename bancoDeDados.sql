@@ -68,6 +68,16 @@ create index if not exists idx_notifications_created_at on public.notifications 
 create index if not exists idx_chat_messages_key_created on public.chat_messages (chat_key, created_at);
 create index if not exists idx_chats_suporte_encerrado on public.chats_suporte (encerrado);
 
+insert into public.support_staff (name, email, role, senha, foto) values
+  ('Administrador', 'admin@helpdesk.local', 'Admin', 'admin', ''),
+  ('Ariel', 'ariel@helpdesk.local', 'Gerente', '123', 'ariel.jpeg'),
+  ('Kevin', 'kevin@helpdesk.local', 'Gerente', '123', 'kevin.jpeg'),
+  ('Gustavo', 'gustavo@helpdesk.local', 'Gerente', '123', 'gustavo.jpeg'),
+  ('Heloisa', 'heloisa@helpdesk.local', 'Gerente', '123', 'helo.jpeg'),
+  ('Gabriel', 'fofinho@helpdesk.local', 'Gerente', '123', 'gabriel.jpeg'),
+  ('Pedro', 'sarrinho@helpdesk.local', 'Gerente', '123', 'pedro.jpeg')
+on conflict (email) do nothing;
+
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql

@@ -3,134 +3,21 @@
 const HELP_DESK_SUPABASE = window.HELPDESK_SUPABASE || {};
 const SUPABASE_URL = HELP_DESK_SUPABASE.url || '';
 const SUPABASE_ANON_KEY = HELP_DESK_SUPABASE.anonKey || '';
-const ALLOW_LOCAL_DB_FALLBACK = HELP_DESK_SUPABASE.localFallback === true;
 
 function hasSupabaseConfig() {
   return /^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(SUPABASE_URL)
     && /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(SUPABASE_ANON_KEY);
 }
 
-// ─── PGlite Database Layer ────────────────────────────────────────────────────
-let db = null;
+// Supabase Database Layer
 let dbReady = false;
-let dbMode = 'localStorage';
+let dbMode = 'supabase';
 let supabase = null;
 
 async function initDB() {
-  if (await initSupabaseDB()) return true;
-
-  if (!ALLOW_LOCAL_DB_FALLBACK) {
-    dbReady = false;
-    dbMode = 'supabase-unavailable';
-    FUNCIONARIOS = [...defaultFuncionarios];
-    chamados = [];
-    notificacoes = [];
-    chatsData = {};
-    chatInternoMsgs = [];
-    directMsgs = {};
-    return false;
-  }
-
-  try {
-    const { PGlite } = await import('https://cdn.jsdelivr.net/npm/@electric-sql/pglite/dist/index.js');
-    db = new PGlite('idb://helpdesk-pro');
-
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS support_staff (
-        id BIGSERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        email TEXT NOT NULL UNIQUE,
-        role TEXT NOT NULL,
-        senha TEXT NOT NULL,
-        foto TEXT DEFAULT '',
-        created_at TIMESTAMPTZ DEFAULT now()
-      );
-
-      CREATE TABLE IF NOT EXISTS users (
-        id BIGSERIAL PRIMARY KEY,
-        username TEXT NOT NULL UNIQUE,
-        email TEXT NOT NULL UNIQUE,
-        password TEXT NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT now()
-      );
-
-      CREATE TABLE IF NOT EXISTS tickets (
-        id TEXT PRIMARY KEY,
-        user_name TEXT NOT NULL,
-        user_cpf TEXT,
-        user_email TEXT,
-        setor TEXT NOT NULL,
-        tipo TEXT NOT NULL,
-        prioridade TEXT DEFAULT 'Não definida',
-        descricao TEXT NOT NULL,
-        status TEXT DEFAULT 'Aberto',
-        responsavel TEXT DEFAULT '',
-        observacoes TEXT DEFAULT '[]',
-        historico TEXT DEFAULT '[]',
-        created_at TIMESTAMPTZ DEFAULT now(),
-        updated_at TIMESTAMPTZ DEFAULT now()
-      );
-
-      CREATE TABLE IF NOT EXISTS notifications (
-        id BIGSERIAL PRIMARY KEY,
-        titulo TEXT NOT NULL,
-        texto TEXT NOT NULL,
-        destinatario TEXT DEFAULT '',
-        ignorar TEXT DEFAULT '',
-        read BOOLEAN DEFAULT false,
-        created_at TIMESTAMPTZ DEFAULT now()
-      );
-
-      CREATE TABLE IF NOT EXISTS chat_messages (
-        id BIGSERIAL PRIMARY KEY,
-        chat_key TEXT NOT NULL,
-        autor TEXT NOT NULL,
-        texto TEXT NOT NULL,
-        is_staff BOOLEAN DEFAULT false,
-        created_at TIMESTAMPTZ DEFAULT now()
-      );
-
-      CREATE TABLE IF NOT EXISTS chats_suporte (
-        cpf TEXT PRIMARY KEY,
-        nome TEXT NOT NULL,
-        assunto TEXT DEFAULT '',
-        observacao TEXT DEFAULT '',
-        responsavel TEXT DEFAULT '',
-        encerrado BOOLEAN DEFAULT false,
-        created_at TIMESTAMPTZ DEFAULT now()
-      );
-
-      CREATE TABLE IF NOT EXISTS app_config (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-    `);
-
-    // Seed default staff if empty
-    const staffCount = await db.query('SELECT COUNT(*) as c FROM support_staff');
-    if (parseInt(staffCount.rows[0].c) === 0) {
-      for (const f of defaultFuncionarios) {
-        await db.query(
-          `INSERT INTO support_staff (name, email, role, senha, foto) VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (email) DO NOTHING`,
-          [f.nome, `${f.usuario}@helpdesk.local`, f.role, f.senha, f.foto || '']
-        );
-      }
-    }
-
-    // Load all data into memory
-    await reloadAllData();
-    dbReady = true;
-    dbMode = 'pglite';
-    console.log('✅ PGlite database ready');
-    return true;
-  } catch (err) {
-    console.error('❌ PGlite init failed, falling back to localStorage:', err);
-    dbReady = false;
-    dbMode = 'localStorage';
-    loadFromLocalStorage();
-    return false;
-  }
+  const ok = await initSupabaseDB();
+  if (!ok) clearMemoryData();
+  return ok;
 }
 
 async function initSupabaseDB() {
@@ -150,97 +37,57 @@ async function initSupabaseDB() {
 
     dbReady = true;
     dbMode = 'supabase';
-    await seedDefaultStaff();
     await reloadAllData();
     console.log('Supabase database ready');
     return true;
   } catch (err) {
-    console.error('Supabase init failed, falling back to browser DB:', err);
+    console.error('Supabase init failed. O projeto exige o banco Supabase:', err);
     supabase = null;
     dbReady = false;
-    dbMode = 'localStorage';
+    dbMode = 'supabase-unavailable';
     return false;
   }
 }
 
-async function seedDefaultStaff() {
-  if (dbMode !== 'supabase') return;
+function clearMemoryData() {
+  chamados = [];
+  notificacoes = [];
+  chatsData = {};
+  chatInternoMsgs = [];
+  directMsgs = {};
+  FUNCIONARIOS = [];
+}
 
-  const { count, error } = await supabase
-    .from('support_staff')
-    .select('id', { count: 'exact', head: true });
-  if (error) throw error;
+function isDBReady() {
+  if (dbReady && supabase) return true;
+  console.error('Banco Supabase indisponivel. Nenhum dado sera salvo fora do banco.');
+  return false;
+}
 
-  if (count === 0) {
-    const rows = defaultFuncionarios.map(f => ({
-      name: f.nome,
-      email: `${f.usuario}@helpdesk.local`,
-      role: f.role,
-      senha: f.senha,
-      foto: f.foto || ''
-    }));
-    const { error: insertError } = await supabase.from('support_staff').insert(rows);
-    if (insertError) throw insertError;
+async function dbGetConfig(key, fallback = null) {
+  if (!isDBReady()) return fallback;
+  const { data, error } = await supabase
+    .from('app_config')
+    .select('value')
+    .eq('key', key)
+    .maybeSingle();
+  if (error) {
+    console.error('dbGetConfig error:', error);
+    return fallback;
   }
+  return data ? data.value : fallback;
+}
+
+async function dbSetConfig(key, value) {
+  if (!isDBReady()) return;
+  const { error } = await supabase
+    .from('app_config')
+    .upsert({ key, value }, { onConflict: 'key' });
+  if (error) console.error('dbSetConfig error:', error);
 }
 
 async function reloadAllData() {
-  if (dbMode === 'supabase') return reloadAllDataSupabase();
-
-  // Load tickets
-  const ticketRows = await db.query('SELECT * FROM tickets ORDER BY created_at ASC');
-  chamados = ticketRows.rows.map(rowToTicket);
-
-  // Load staff
-  const staffRows = await db.query('SELECT * FROM support_staff ORDER BY id ASC');
-  FUNCIONARIOS = staffRows.rows.map(rowToStaff);
-  if (!FUNCIONARIOS.find(f => f.usuario === 'admin')) {
-    FUNCIONARIOS.unshift({ usuario: 'admin', senha: 'admin', nome: 'Administrador', role: 'Admin', foto: '' });
-  }
-
-  // Load notifications (last 20)
-  const notifRows = await db.query('SELECT * FROM notifications ORDER BY created_at DESC LIMIT 20');
-  notificacoes = notifRows.rows.map(r => ({
-    titulo: r.titulo,
-    texto: r.texto,
-    data: r.created_at,
-    destinatario: r.destinatario || '',
-    ignorar: r.ignorar || ''
-  }));
-
-  // Load chat interno geral
-  const geralRows = await db.query(`SELECT * FROM chat_messages WHERE chat_key = 'GERAL' ORDER BY created_at ASC`);
-  chatInternoMsgs = geralRows.rows.map(r => ({ autor: r.autor, texto: r.texto, data: r.created_at }));
-
-  // Load DMs
-  const dmRows = await db.query(`SELECT * FROM chat_messages WHERE chat_key != 'GERAL' AND chat_key NOT LIKE 'SUPORTE_%' ORDER BY created_at ASC`);
-  directMsgs = {};
-  dmRows.rows.forEach(r => {
-    if (!directMsgs[r.chat_key]) directMsgs[r.chat_key] = [];
-    directMsgs[r.chat_key].push({ autor: r.autor, texto: r.texto, data: r.created_at });
-  });
-
-  // Load suporte chats
-  const chatRows = await db.query('SELECT * FROM chats_suporte WHERE encerrado = false ORDER BY created_at DESC');
-  chatsData = {};
-  for (const c of chatRows.rows) {
-    const msgs = await db.query(
-      `SELECT * FROM chat_messages WHERE chat_key = $1 ORDER BY created_at ASC`,
-      [`SUPORTE_${c.cpf}`]
-    );
-    chatsData[c.cpf] = {
-      nome: c.nome,
-      assunto: c.assunto,
-      observacao: c.observacao,
-      responsavel: c.responsavel,
-      mensagens: msgs.rows.map(m => ({
-        autor: m.autor,
-        texto: m.texto,
-        isStaff: m.is_staff,
-        data: m.created_at
-      }))
-    };
-  }
+  return reloadAllDataSupabase();
 }
 
 async function reloadAllDataSupabase() {
@@ -267,9 +114,6 @@ async function reloadAllDataSupabase() {
 
   chamados = ticketRows.data.map(rowToTicket);
   FUNCIONARIOS = staffRows.data.map(rowToStaff);
-  if (!FUNCIONARIOS.find(f => f.usuario === 'admin')) {
-    FUNCIONARIOS.unshift({ usuario: 'admin', senha: 'admin', nome: 'Administrador', role: 'Admin', foto: '' });
-  }
 
   notificacoes = notifRows.data.map(r => ({
     titulo: r.titulo,
@@ -343,213 +187,111 @@ function rowToStaff(r) {
 
 // DB write helpers
 async function dbSaveTicket(t) {
-  if (!dbReady) { salvarLS(); return; }
+  if (!isDBReady()) return;
   try {
-    if (dbMode === 'supabase') {
-      const { error } = await supabase.from('tickets').upsert({
-        id: t.id,
-        user_name: t.nome,
-        user_cpf: t.cpf || '',
-        user_email: t.email || '',
-        setor: t.setor,
-        tipo: t.tipo,
-        prioridade: t.prioridade || 'NÃ£o definida',
-        descricao: t.descricao,
-        status: t.status,
-        responsavel: t.responsavel || '',
-        observacoes: JSON.stringify(t.observacoes || []),
-        historico: JSON.stringify(t.historico || []),
-        created_at: t.data || new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'id' });
-      if (error) throw error;
-      return;
-    }
-
-    await db.query(
-      `INSERT INTO tickets (id, user_name, user_cpf, user_email, setor, tipo, prioridade, descricao, status, responsavel, observacoes, historico)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-       ON CONFLICT(id) DO UPDATE SET
-         status=$9, prioridade=$7, responsavel=$10, observacoes=$11, historico=$12, updated_at=now()`,
-      [t.id, t.nome, t.cpf||'', t.email||'', t.setor, t.tipo, t.prioridade||'Não definida',
-       t.descricao, t.status, t.responsavel||'',
-       JSON.stringify(t.observacoes||[]), JSON.stringify(t.historico||[])]
-    );
+    const { error } = await supabase.from('tickets').upsert({
+      id: t.id,
+      user_name: t.nome,
+      user_cpf: t.cpf || '',
+      user_email: t.email || '',
+      setor: t.setor,
+      tipo: t.tipo,
+      prioridade: t.prioridade || 'Nao definida',
+      descricao: t.descricao,
+      status: t.status,
+      responsavel: t.responsavel || '',
+      observacoes: JSON.stringify(t.observacoes || []),
+      historico: JSON.stringify(t.historico || []),
+      created_at: t.data || new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'id' });
+    if (error) throw error;
   } catch(e) { console.error('dbSaveTicket error:', e); }
 }
 
 async function dbDeleteTicket(id) {
-  if (!dbReady) return;
+  if (!isDBReady()) return;
   try {
-    if (dbMode === 'supabase') {
-      const { error } = await supabase.from('tickets').delete().eq('id', id);
-      if (error) throw error;
-      return;
-    }
-    await db.query('DELETE FROM tickets WHERE id=$1', [id]);
+    const { error } = await supabase.from('tickets').delete().eq('id', id);
+    if (error) throw error;
   } catch(e) { console.error(e); }
 }
 
 async function dbSaveStaff(f) {
-  if (!dbReady) return;
+  if (!isDBReady()) return;
   try {
-    const email = `${f.usuario}@helpdesk.local`;
-    if (dbMode === 'supabase') {
-      const { error } = await supabase.from('support_staff').upsert({
-        name: f.nome,
-        email,
-        role: f.role,
-        senha: f.senha,
-        foto: f.foto || ''
-      }, { onConflict: 'email' });
-      if (error) throw error;
-      return;
-    }
-
-    await db.query(
-      `INSERT INTO support_staff (name, email, role, senha, foto)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT(email) DO UPDATE SET name=$1, role=$3, senha=$4, foto=$5`,
-      [f.nome, email, f.role, f.senha, f.foto||'']
-    );
+    const { error } = await supabase.from('support_staff').upsert({
+      name: f.nome,
+      email: `${f.usuario}@helpdesk.local`,
+      role: f.role,
+      senha: f.senha,
+      foto: f.foto || ''
+    }, { onConflict: 'email' });
+    if (error) throw error;
   } catch(e) { console.error('dbSaveStaff error:', e); }
 }
 
 async function dbDeleteStaff(usuario) {
-  if (!dbReady) return;
+  if (!isDBReady()) return;
   try {
-    if (dbMode === 'supabase') {
-      const { error } = await supabase.from('support_staff').delete().eq('email', `${usuario}@helpdesk.local`);
-      if (error) throw error;
-      return;
-    }
-    await db.query('DELETE FROM support_staff WHERE email=$1', [`${usuario}@helpdesk.local`]);
+    const { error } = await supabase.from('support_staff').delete().eq('email', `${usuario}@helpdesk.local`);
+    if (error) throw error;
   } catch(e) { console.error(e); }
 }
 
 async function dbAddNotif(titulo, texto, options = {}) {
-  if (!dbReady) return;
+  if (!isDBReady()) return;
   try {
-    if (dbMode === 'supabase') {
-      const { error } = await supabase.from('notifications').insert({
-        titulo,
-        texto,
-        destinatario: options.destinatario || '',
-        ignorar: options.ignorar || ''
-      });
-      if (error) throw error;
-      return;
-    }
-
-    await db.query(
-      `INSERT INTO notifications (titulo, texto, destinatario, ignorar) VALUES ($1,$2,$3,$4)`,
-      [titulo, texto, options.destinatario||'', options.ignorar||'']
-    );
-    // Keep only last 20
-    await db.query(`DELETE FROM notifications WHERE id NOT IN (SELECT id FROM notifications ORDER BY created_at DESC LIMIT 20)`);
+    const { error } = await supabase.from('notifications').insert({
+      titulo,
+      texto,
+      destinatario: options.destinatario || '',
+      ignorar: options.ignorar || ''
+    });
+    if (error) throw error;
   } catch(e) { console.error(e); }
 }
 
 async function dbSendChatMsg(chatKey, autor, texto, isStaff = false) {
-  if (!dbReady) return;
+  if (!isDBReady()) return;
   try {
-    if (dbMode === 'supabase') {
-      const { error } = await supabase.from('chat_messages').insert({
-        chat_key: chatKey,
-        autor,
-        texto,
-        is_staff: isStaff
-      });
-      if (error) throw error;
-      return;
-    }
-
-    await db.query(
-      `INSERT INTO chat_messages (chat_key, autor, texto, is_staff) VALUES ($1,$2,$3,$4)`,
-      [chatKey, autor, texto, isStaff]
-    );
+    const { error } = await supabase.from('chat_messages').insert({
+      chat_key: chatKey,
+      autor,
+      texto,
+      is_staff: isStaff
+    });
+    if (error) throw error;
   } catch(e) { console.error(e); }
 }
 
 async function dbSaveSuporteChat(cpf, data) {
-  if (!dbReady) return;
+  if (!isDBReady()) return;
   try {
-    if (dbMode === 'supabase') {
-      const { error } = await supabase.from('chats_suporte').upsert({
-        cpf,
-        nome: data.nome,
-        assunto: data.assunto || '',
-        observacao: data.observacao || '',
-        responsavel: data.responsavel || '',
-        encerrado: false
-      }, { onConflict: 'cpf' });
-      if (error) throw error;
-      return;
-    }
-
-    await db.query(
-      `INSERT INTO chats_suporte (cpf, nome, assunto, observacao, responsavel)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT(cpf) DO UPDATE SET responsavel=$5`,
-      [cpf, data.nome, data.assunto||'', data.observacao||'', data.responsavel||'']
-    );
+    const { error } = await supabase.from('chats_suporte').upsert({
+      cpf,
+      nome: data.nome,
+      assunto: data.assunto || '',
+      observacao: data.observacao || '',
+      responsavel: data.responsavel || '',
+      encerrado: false
+    }, { onConflict: 'cpf' });
+    if (error) throw error;
   } catch(e) { console.error(e); }
 }
 
 async function dbDeleteSuporteChat(cpf) {
-  if (!dbReady) return;
+  if (!isDBReady()) return;
   try {
-    if (dbMode === 'supabase') {
-      const chatKey = `SUPORTE_${cpf}`;
-      const [{ error: chatError }, { error: msgError }] = await Promise.all([
-        supabase.from('chats_suporte').update({ encerrado: true }).eq('cpf', cpf),
-        supabase.from('chat_messages').delete().eq('chat_key', chatKey)
-      ]);
-      if (chatError || msgError) throw chatError || msgError;
-      return;
-    }
-
-    await db.query('UPDATE chats_suporte SET encerrado=true WHERE cpf=$1', [cpf]);
-    await db.query(`DELETE FROM chat_messages WHERE chat_key=$1`, [`SUPORTE_${cpf}`]);
+    const chatKey = `SUPORTE_${cpf}`;
+    const [{ error: chatError }, { error: msgError }] = await Promise.all([
+      supabase.from('chats_suporte').update({ encerrado: true }).eq('cpf', cpf),
+      supabase.from('chat_messages').delete().eq('chat_key', chatKey)
+    ]);
+    if (chatError || msgError) throw chatError || msgError;
   } catch(e) { console.error(e); }
 }
-
-// localStorage fallback
-function loadFromLocalStorage() {
-  chamados = JSON.parse(localStorage.getItem('hd_chamados') || '[]');
-  notificacoes = JSON.parse(localStorage.getItem('hd_notifs') || '[]');
-  chatsData = JSON.parse(localStorage.getItem('hd_chats') || '{}');
-  chatInternoMsgs = JSON.parse(localStorage.getItem('hd_chat_interno') || '[]');
-  directMsgs = JSON.parse(localStorage.getItem('hd_dms') || '{}');
-
-  let stored = JSON.parse(localStorage.getItem('hd_funcionarios'));
-  if (!stored || stored.length === 0) {
-    FUNCIONARIOS = [...defaultFuncionarios];
-    localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
-  } else {
-    FUNCIONARIOS = stored;
-    let changed = false;
-    defaultFuncionarios.forEach(df => {
-      const ex = FUNCIONARIOS.find(f => f.usuario.toLowerCase() === df.usuario.toLowerCase());
-      if (!ex) { FUNCIONARIOS.push(df); changed = true; }
-      else if (df.foto && ex.foto !== df.foto) { ex.foto = df.foto; changed = true; }
-    });
-    if (changed) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
-  }
-}
-
-function salvarLS() {
-  if (!ALLOW_LOCAL_DB_FALLBACK) return;
-
-  localStorage.setItem('hd_chamados', JSON.stringify(chamados));
-  localStorage.setItem('hd_notifs', JSON.stringify(notificacoes));
-  localStorage.setItem('hd_chats', JSON.stringify(chatsData));
-  localStorage.setItem('hd_chat_interno', JSON.stringify(chatInternoMsgs));
-  localStorage.setItem('hd_dms', JSON.stringify(directMsgs));
-  localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
-}
-
-// ─── App State ────────────────────────────────────────────────────────────────
+// App State ────────────────────────────────────────────────────────────────
 let chamados = [];
 let notificacoes = [];
 let chatsData = {};
@@ -567,15 +309,6 @@ let lastReadTime = {};
 let editandoUsuario = null;
 let selectedProblem = '';
 let FUNCIONARIOS = [];
-
-const defaultFuncionarios = [
-  { usuario: 'ariel',    senha: '123', nome: 'Ariel',   role: 'Gerente', foto: 'ariel.jpeg'   },
-  { usuario: 'kevin',    senha: '123', nome: 'Kevin',   role: 'Gerente', foto: 'kevin.jpeg'   },
-  { usuario: 'gustavo',  senha: '123', nome: 'Gustavo', role: 'Gerente', foto: 'gustavo.jpeg' },
-  { usuario: 'heloisa',  senha: '123', nome: 'Heloisa', role: 'Gerente', foto: 'helo.jpeg'    },
-  { usuario: 'fofinho',  senha: '123', nome: 'Gabriel', role: 'Gerente', foto: 'gabriel.jpeg' },
-  { usuario: 'sarrinho', senha: '123', nome: 'Pedro',   role: 'Gerente', foto: 'pedro.jpeg'   },
-];
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 function gerarId() {
@@ -612,7 +345,6 @@ async function addNotif(titulo, texto, options = {}) {
   notificacoes.unshift({ titulo, texto, data: new Date().toISOString(), ...options });
   if (notificacoes.length > 20) notificacoes.pop();
   await dbAddNotif(titulo, texto, options);
-  if (!dbReady) salvarLS();
   renderNotifs();
 }
 
@@ -816,7 +548,6 @@ document.getElementById('formChamado').addEventListener('submit', async function
 
   chamados.push(novo);
   await dbSaveTicket(novo);
-  if (!dbReady) salvarLS();
 
   await addNotif(`Chamado ${novo.id} aberto`, `${novo.tipo} · ${novo.setor}`);
   toast('success', 'Chamado aberto!', `ID: ${novo.id} — ${novo.tipo}`);
@@ -914,20 +645,14 @@ function renderMeusChamados() {
 });
 
 // ─── Login ────────────────────────────────────────────────────────────────────
-document.getElementById('formLogin').addEventListener('submit', function(e) {
+document.getElementById('formLogin').addEventListener('submit', async function(e) {
   e.preventDefault();
   document.getElementById('loginError').textContent = '';
 
   const user = document.getElementById('login-user').value.trim();
   const pass = document.getElementById('login-pass').value;
 
-  // admin hardcoded
-  let func = null;
-  if (user === 'admin' && pass === 'admin') {
-    func = { usuario: 'admin', senha: 'admin', nome: 'Administrador', role: 'Admin', foto: '' };
-  } else {
-    func = FUNCIONARIOS.find(f => f.usuario.toLowerCase() === user.toLowerCase() && f.senha === pass);
-  }
+  const func = FUNCIONARIOS.find(f => f.usuario.toLowerCase() === user.toLowerCase() && f.senha === pass);
 
   if (!func) {
     document.getElementById('loginError').textContent = 'Usuário ou senha inválidos.';
@@ -935,6 +660,7 @@ document.getElementById('formLogin').addEventListener('submit', function(e) {
   }
   funcLogado = func;
   logado = true;
+  await loadLastRead();
   entrarPainel();
 });
 
@@ -1147,7 +873,6 @@ async function salvarModal(id) {
   }
 
   await dbSaveTicket(chamados[idx]);
-  if (!dbReady) salvarLS();
 
   await addNotif(`Chamado ${id} atualizado`, novoStatus ? `Status: ${novoStatus}` : 'Observação adicionada');
   toast('info', `Chamado ${id} atualizado`, novoStatus ? `Novo status: ${novoStatus}` : '');
@@ -1160,7 +885,6 @@ window.excluirChamado = async function(id) {
   if (!confirm('Tem certeza que deseja excluir permanentemente este chamado?')) return;
   chamados = chamados.filter(c => c.id !== id);
   await dbDeleteTicket(id);
-  if (!dbReady) salvarLS();
   toast('info', 'Chamado excluído', `O chamado ${id} foi removido do sistema.`);
   fecharModal();
   atualizarStatsEmp();
@@ -1231,7 +955,6 @@ window.removerFuncionario = async function(usuario) {
   const funcObj = FUNCIONARIOS.find(f => f.usuario === usuario);
   FUNCIONARIOS = FUNCIONARIOS.filter(f => f.usuario !== usuario);
   await dbDeleteStaff(usuario);
-  if (!dbReady && ALLOW_LOCAL_DB_FALLBACK) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
 
   if (funcObj) {
     let reatribuidos = 0;
@@ -1246,7 +969,6 @@ window.removerFuncionario = async function(usuario) {
         reatribuidos++;
       }
     }
-    if (reatribuidos > 0 && !dbReady) salvarLS();
   }
   renderEquipe();
   toast('info', 'Removido', `O usuário ${usuario} foi excluído.`);
@@ -1275,7 +997,6 @@ document.getElementById('formEquipe')?.addEventListener('submit', async function
       }
       FUNCIONARIOS[idx] = { usuario: user, senha: pass, nome, role: cargo, foto: FUNCIONARIOS[idx].foto || '' };
       await dbSaveStaff(FUNCIONARIOS[idx]);
-      if (!dbReady && ALLOW_LOCAL_DB_FALLBACK) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
       toast('success', 'Sucesso', 'Funcionário atualizado com sucesso!');
       if (funcLogado && funcLogado.usuario === editandoUsuario) {
         funcLogado = FUNCIONARIOS[idx];
@@ -1293,7 +1014,6 @@ document.getElementById('formEquipe')?.addEventListener('submit', async function
     const novoFunc = { usuario: user, senha: pass, nome, role: cargo, foto: '' };
     FUNCIONARIOS.push(novoFunc);
     await dbSaveStaff(novoFunc);
-    if (!dbReady && ALLOW_LOCAL_DB_FALLBACK) localStorage.setItem('hd_funcionarios', JSON.stringify(FUNCIONARIOS));
     toast('success', 'Sucesso', 'Funcionário cadastrado com sucesso!');
     this.reset();
   }
@@ -1541,20 +1261,26 @@ setTimeout(() => {
 }, 100);
 
 // ─── Chat Interno ─────────────────────────────────────────────────────────────
-window.loadLastRead = function() {
-  if (funcLogado) lastReadTime = JSON.parse(localStorage.getItem(`hd_last_read_${funcLogado.usuario}`) || '{}');
+window.loadLastRead = async function() {
+  if (!funcLogado) return;
+  const raw = await dbGetConfig(`last_read_${funcLogado.usuario}`, '{}');
+  try {
+    lastReadTime = JSON.parse(raw || '{}');
+  } catch (e) {
+    lastReadTime = {};
+  }
 };
-window.saveLastRead = function() {
-  if (funcLogado) localStorage.setItem(`hd_last_read_${funcLogado.usuario}`, JSON.stringify(lastReadTime));
+window.saveLastRead = async function() {
+  if (funcLogado) await dbSetConfig(`last_read_${funcLogado.usuario}`, JSON.stringify(lastReadTime));
 };
 window.getUnreadCount = function(chatId, msgs) {
   if (!funcLogado || !msgs || msgs.length === 0) return 0;
   const lrTime = lastReadTime[chatId] ? new Date(lastReadTime[chatId]).getTime() : 0;
   return msgs.filter(m => new Date(m.data).getTime() > lrTime && m.autor !== funcLogado.nome).length;
 };
-window.updateChatBadge = function() {
+window.updateChatBadge = async function() {
   if (!funcLogado) return;
-  loadLastRead();
+  await loadLastRead();
   let totalUnread = getUnreadCount('GERAL', chatInternoMsgs);
   if (FUNCIONARIOS) {
     FUNCIONARIOS.forEach(f => {
@@ -1579,14 +1305,14 @@ window.updateChatBadge = function() {
   }
 };
 
-window.renderChatInternoList = function() {
+window.renderChatInternoList = async function() {
   const list = document.getElementById('chatInternoList');
   if (!list) return;
 
   if (logado) {
-    loadLastRead();
+    await loadLastRead();
     lastReadTime[chatInternoActive] = new Date().toISOString();
-    saveLastRead();
+    await saveLastRead();
   }
 
   let chatItems = [];
@@ -1679,7 +1405,6 @@ window.enviarMsgChatInterno = async function() {
     const msg = { autor: funcLogado.nome, texto, data: new Date().toISOString() };
     chatInternoMsgs.push(msg);
     await dbSendChatMsg('GERAL', funcLogado.nome, texto, true);
-    if (!dbReady && ALLOW_LOCAL_DB_FALLBACK) localStorage.setItem('hd_chat_interno', JSON.stringify(chatInternoMsgs));
     await addNotif('Chat Geral', `Nova mensagem de ${funcLogado.nome}`, { ignorar: funcLogado.usuario });
   } else {
     const targetUser = FUNCIONARIOS.find(f => f.usuario === chatInternoActive);
@@ -1689,7 +1414,6 @@ window.enviarMsgChatInterno = async function() {
     const msg = { autor: funcLogado.nome, texto, data: new Date().toISOString() };
     directMsgs[convKey].push(msg);
     await dbSendChatMsg(convKey, funcLogado.nome, texto, true);
-    if (!dbReady && ALLOW_LOCAL_DB_FALLBACK) localStorage.setItem('hd_dms', JSON.stringify(directMsgs));
     await addNotif('Mensagem', `Nova mensagem de ${funcLogado.nome}`, { destinatario: targetUser.usuario });
   }
   inp.value = '';
@@ -1762,13 +1486,17 @@ document.getElementById('btnUpdateReports')?.addEventListener('click', renderGra
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
 const themeToggle = document.getElementById('themeToggle');
-const savedTheme  = localStorage.getItem('hd_theme') || 'light-mode';
-document.body.className = savedTheme;
+document.body.className = 'light-mode';
 
-themeToggle.addEventListener('click', () => {
+async function loadAppTheme() {
+  const savedTheme = await dbGetConfig('theme', 'light-mode');
+  document.body.className = savedTheme === 'dark-mode' ? 'dark-mode' : 'light-mode';
+}
+
+themeToggle.addEventListener('click', async () => {
   const isDark = document.body.classList.contains('dark-mode');
   document.body.className = isDark ? 'light-mode' : 'dark-mode';
-  localStorage.setItem('hd_theme', document.body.className);
+  await dbSetConfig('theme', document.body.className);
   const pg = document.querySelector('.page.active');
   if (pg && pg.id === 'page-relatorios') renderGraficos();
 });
@@ -1780,12 +1508,9 @@ document.getElementById('notifBtn').addEventListener('click', (e) => {
 });
 document.getElementById('clearNotifs').addEventListener('click', async () => {
   notificacoes = [];
-  if (dbReady && dbMode === 'supabase') {
+  if (isDBReady()) {
     try { await supabase.from('notifications').delete().gte('id', 0); } catch(e) {}
-  } else if (dbReady) {
-    try { await db.query('DELETE FROM notifications'); } catch(e) {}
   }
-  if (!dbReady) salvarLS();
   renderNotifs();
 });
 document.addEventListener('click', (e) => {
@@ -1810,39 +1535,7 @@ document.addEventListener('click', e => {
   if (el) irPara(el.dataset.goto);
 });
 
-// ─── Cross-tab sync (localStorage fallback) ───────────────────────────────────
-window.addEventListener('storage', function(e) {
-  if (dbReady || !ALLOW_LOCAL_DB_FALLBACK) return; // DB handles sync
-  if (e.key === 'hd_chats') {
-    chatsData = JSON.parse(e.newValue || '{}');
-    if (chatMode === 'admin') renderChatList();
-    if (chatActiveCpf && chatsData[chatActiveCpf]) renderChatMsgs(chatActiveCpf);
-  } else if (e.key === 'hd_chat_interno') {
-    chatInternoMsgs = JSON.parse(e.newValue || '[]');
-    const pg = document.querySelector('.page.active');
-    if (pg && pg.id === 'page-chat') { renderChatInternoList(); renderChatInterno(); }
-    else updateChatBadge();
-  } else if (e.key === 'hd_dms') {
-    directMsgs = JSON.parse(e.newValue || '{}');
-    const pg = document.querySelector('.page.active');
-    if (pg && pg.id === 'page-chat') { renderChatInternoList(); renderChatInterno(); }
-    else updateChatBadge();
-  } else if (e.key === 'hd_chamados') {
-    chamados = JSON.parse(e.newValue || '[]');
-    atualizarHome(); renderMeusChamados();
-    if (logado) { renderPainelLista(); atualizarStatsEmp(); }
-    const pg = document.querySelector('.page.active');
-    if (pg && pg.id === 'page-relatorios') renderGraficos();
-  } else if (e.key === 'hd_notifs') {
-    notificacoes = JSON.parse(e.newValue || '[]');
-    renderNotifs();
-  } else if (e.key === 'hd_funcionarios') {
-    FUNCIONARIOS = JSON.parse(e.newValue || '[]');
-    renderEquipe();
-  }
-});
-
-// ─── Real-time Polling ────────────────────────────────────────────────────────
+// Real-time Polling ────────────────────────────────────────────────────────
 let _pollInterval = null;
 let _lastTicketCount = 0;
 let _lastNotifCount = 0;
@@ -1851,140 +1544,46 @@ let _lastInternoMsgCount = 0;
 let _lastSuporteChatKeys = '';
 
 async function pollUpdates() {
-  if (!dbReady || (dbMode !== 'supabase' && !db)) return;
+  if (!isDBReady()) return;
   try {
-    if (dbMode === 'supabase') {
-      const before = JSON.stringify({
-        chamados: chamados.map(t => [t.id, t.status, t.prioridade, t.responsavel, (t.observacoes || []).length]),
-        funcionarios: FUNCIONARIOS,
-        notificacoes,
-        chats: Object.fromEntries(Object.entries(chatsData).map(([cpf, c]) => [cpf, [c.responsavel, c.mensagens?.length || 0]])),
-        chatInterno: chatInternoMsgs.length,
-        dms: Object.values(directMsgs).reduce((sum, msgs) => sum + msgs.length, 0)
-      });
+    const before = JSON.stringify({
+      chamados: chamados.map(t => [t.id, t.status, t.prioridade, t.responsavel, (t.observacoes || []).length]),
+      funcionarios: FUNCIONARIOS,
+      notificacoes,
+      chats: Object.fromEntries(Object.entries(chatsData).map(([cpf, c]) => [cpf, [c.responsavel, c.mensagens?.length || 0]])),
+      chatInterno: chatInternoMsgs.length,
+      dms: Object.values(directMsgs).reduce((sum, msgs) => sum + msgs.length, 0)
+    });
 
-      await reloadAllData();
+    await reloadAllData();
 
-      const after = JSON.stringify({
-        chamados: chamados.map(t => [t.id, t.status, t.prioridade, t.responsavel, (t.observacoes || []).length]),
-        funcionarios: FUNCIONARIOS,
-        notificacoes,
-        chats: Object.fromEntries(Object.entries(chatsData).map(([cpf, c]) => [cpf, [c.responsavel, c.mensagens?.length || 0]])),
-        chatInterno: chatInternoMsgs.length,
-        dms: Object.values(directMsgs).reduce((sum, msgs) => sum + msgs.length, 0)
-      });
+    const after = JSON.stringify({
+      chamados: chamados.map(t => [t.id, t.status, t.prioridade, t.responsavel, (t.observacoes || []).length]),
+      funcionarios: FUNCIONARIOS,
+      notificacoes,
+      chats: Object.fromEntries(Object.entries(chatsData).map(([cpf, c]) => [cpf, [c.responsavel, c.mensagens?.length || 0]])),
+      chatInterno: chatInternoMsgs.length,
+      dms: Object.values(directMsgs).reduce((sum, msgs) => sum + msgs.length, 0)
+    });
 
-      if (before !== after) {
-        atualizarHome();
-        renderMeusChamados();
-        renderNotifs();
-        if (logado) { renderPainelLista(); atualizarStatsEmp(); updateChatBadge(); }
-        const pg = document.querySelector('.page.active');
-        if (pg && pg.id === 'page-equipe') renderEquipe();
-        if (pg && pg.id === 'page-suporte') {
-          if (chatMode === 'admin') renderChatList();
-          if (chatActiveCpf && chatsData[chatActiveCpf]) renderChatMsgs(chatActiveCpf);
-        }
-        if (pg && pg.id === 'page-chat') { renderChatInternoList(); renderChatInterno(); }
-        if (pg && pg.id === 'page-relatorios') renderGraficos();
-      }
-      return;
-    }
-    // ── Tickets ──────────────────────────────────────────────────────────────
-    const ticketRows = await db.query('SELECT * FROM tickets ORDER BY created_at ASC');
-    const newTickets = ticketRows.rows.map(rowToTicket);
-    if (JSON.stringify(newTickets.map(t => t.id + t.status + t.prioridade + t.responsavel + (t.observacoes||[]).length)) !==
-        JSON.stringify(chamados.map(t => t.id + t.status + t.prioridade + t.responsavel + (t.observacoes||[]).length))) {
-      chamados = newTickets;
+    if (before !== after) {
       atualizarHome();
       renderMeusChamados();
-      if (logado) { renderPainelLista(); atualizarStatsEmp(); }
-      const pg = document.querySelector('.page.active');
-      if (pg && pg.id === 'page-relatorios') renderGraficos();
-    }
-
-    // ── Staff ─────────────────────────────────────────────────────────────────
-    const staffRows = await db.query('SELECT * FROM support_staff ORDER BY id ASC');
-    const newStaff = staffRows.rows.map(rowToStaff);
-    if (JSON.stringify(newStaff) !== JSON.stringify(FUNCIONARIOS.filter(f => f.usuario !== 'admin'))) {
-      FUNCIONARIOS = newStaff;
-      if (!FUNCIONARIOS.find(f => f.usuario === 'admin'))
-        FUNCIONARIOS.unshift({ usuario: 'admin', senha: 'admin', nome: 'Administrador', role: 'Admin', foto: '' });
+      renderNotifs();
+      if (logado) { renderPainelLista(); atualizarStatsEmp(); updateChatBadge(); }
       const pg = document.querySelector('.page.active');
       if (pg && pg.id === 'page-equipe') renderEquipe();
-    }
-
-    // ── Notifications ─────────────────────────────────────────────────────────
-    const notifRows = await db.query('SELECT * FROM notifications ORDER BY created_at DESC LIMIT 20');
-    const newNotifs = notifRows.rows.map(r => ({
-      titulo: r.titulo, texto: r.texto, data: r.created_at,
-      destinatario: r.destinatario || '', ignorar: r.ignorar || ''
-    }));
-    if (JSON.stringify(newNotifs) !== JSON.stringify(notificacoes)) {
-      notificacoes = newNotifs;
-      renderNotifs();
-    }
-
-    // ── Chat Suporte ──────────────────────────────────────────────────────────
-    const chatRows = await db.query('SELECT * FROM chats_suporte WHERE encerrado = false ORDER BY created_at DESC');
-    const newChatKeys = chatRows.rows.map(c => c.cpf).sort().join(',');
-    let suporteMudou = newChatKeys !== _lastSuporteChatKeys;
-    _lastSuporteChatKeys = newChatKeys;
-
-    for (const c of chatRows.rows) {
-      const msgs = await db.query(
-        `SELECT * FROM chat_messages WHERE chat_key = $1 ORDER BY created_at ASC`,
-        [`SUPORTE_${c.cpf}`]
-      );
-      const newMsgs = msgs.rows.map(m => ({ autor: m.autor, texto: m.texto, isStaff: m.is_staff, data: m.created_at }));
-      const oldLen = chatsData[c.cpf]?.mensagens?.length || 0;
-      if (newMsgs.length !== oldLen || !chatsData[c.cpf]) {
-        suporteMudou = true;
-        chatsData[c.cpf] = {
-          nome: c.nome, assunto: c.assunto, observacao: c.observacao,
-          responsavel: c.responsavel, mensagens: newMsgs
-        };
-      }
-    }
-    if (suporteMudou) {
-      const pg = document.querySelector('.page.active');
       if (pg && pg.id === 'page-suporte') {
         if (chatMode === 'admin') renderChatList();
         if (chatActiveCpf && chatsData[chatActiveCpf]) renderChatMsgs(chatActiveCpf);
       }
-    }
-
-    // ── Chat Interno Geral ────────────────────────────────────────────────────
-    const geralRows = await db.query(`SELECT * FROM chat_messages WHERE chat_key = 'GERAL' ORDER BY created_at ASC`);
-    const newGeralMsgs = geralRows.rows.map(r => ({ autor: r.autor, texto: r.texto, data: r.created_at }));
-    if (newGeralMsgs.length !== chatInternoMsgs.length) {
-      chatInternoMsgs = newGeralMsgs;
-      const pg = document.querySelector('.page.active');
       if (pg && pg.id === 'page-chat') { renderChatInternoList(); renderChatInterno(); }
-      else updateChatBadge();
+      if (pg && pg.id === 'page-relatorios') renderGraficos();
     }
-
-    // ── DMs ───────────────────────────────────────────────────────────────────
-    const dmRows = await db.query(`SELECT * FROM chat_messages WHERE chat_key != 'GERAL' AND chat_key NOT LIKE 'SUPORTE_%' ORDER BY created_at ASC`);
-    const newDMs = {};
-    dmRows.rows.forEach(r => {
-      if (!newDMs[r.chat_key]) newDMs[r.chat_key] = [];
-      newDMs[r.chat_key].push({ autor: r.autor, texto: r.texto, data: r.created_at });
-    });
-    const oldDMLen = Object.values(directMsgs).reduce((s, a) => s + a.length, 0);
-    const newDMLen = Object.values(newDMs).reduce((s, a) => s + a.length, 0);
-    if (newDMLen !== oldDMLen) {
-      directMsgs = newDMs;
-      const pg = document.querySelector('.page.active');
-      if (pg && pg.id === 'page-chat') { renderChatInternoList(); renderChatInterno(); }
-      else updateChatBadge();
-    }
-
   } catch (err) {
     console.warn('Poll error:', err);
   }
 }
-
 function startPolling(intervalMs = 3000) {
   if (_pollInterval) clearInterval(_pollInterval);
   _pollInterval = setInterval(pollUpdates, intervalMs);
@@ -2005,11 +1604,8 @@ function showDBStatus(ok) {
     box-shadow: 0 2px 8px rgba(0,0,0,.2); transition: opacity .5s;
   `;
   badge.innerHTML = ok
-    ? `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg> ${dbMode === 'supabase' ? 'Banco sincronizado' : 'Banco local conectado'}`
-    : `⚠️ Modo offline (localStorage)`;
-  if (!ok) {
-    badge.textContent = ALLOW_LOCAL_DB_FALLBACK ? 'Banco local/offline' : 'Banco do projeto indisponivel';
-  }
+    ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg> Banco sincronizado'
+    : 'Banco do projeto indisponivel';
   document.body.appendChild(badge);
   setTimeout(() => { badge.style.opacity = '0'; setTimeout(() => badge.remove(), 500); }, 3000);
 }
@@ -2023,6 +1619,7 @@ function showDBStatus(ok) {
 
   const ok = await initDB();
   showDBStatus(ok);
+  if (ok) await loadAppTheme();
 
   renderNotifs();
   atualizarHome();
