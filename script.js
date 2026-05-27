@@ -488,6 +488,18 @@ function clientePodeAlterar(acao = 'realizar esta acao') {
   return false;
 }
 
+function clientePodeAcessarChamados(acao = 'acessar os chamados') {
+  if (clienteLogado) return true;
+  toast('info', 'Login de cliente necessario', `Faca login ou cadastre-se para ${acao}.`);
+  dbAddClientActivity('login_cliente_forcado', `Tentativa sem login de cliente: ${acao}`, null);
+  showClientAuth('login', {
+    required: true,
+    title: 'Login de cliente necessario',
+    copy: `Para ${acao}, entre ou cadastre-se como cliente.`
+  });
+  return false;
+}
+
 function switchClientAuthTab(tab) {
   document.querySelectorAll('.client-auth-tab').forEach(btn =>
     btn.classList.toggle('active', btn.dataset.clientAuthTab === tab)
@@ -575,6 +587,9 @@ function findClienteByCredential(credential, senha) {
 }
 
 function irPara(pagina) {
+  if ((pagina === 'abrir' || pagina === 'meus') && !clientePodeAcessarChamados(pagina === 'abrir' ? 'abrir um chamado' : 'ver seus chamados')) {
+    return;
+  }
   if ((pagina === 'equipe' || pagina === 'relatorios' || pagina === 'chat') && !logado) {
     toast('error', 'Acesso Restrito', 'Faça login para acessar esta página.');
     irPara('painel');
@@ -1827,12 +1842,11 @@ async function loadAppTheme() {
 }
 
 themeToggle.addEventListener('click', async () => {
-  if (!clientePodeAlterar('alterar o tema do site')) return;
   const isDark = document.body.classList.contains('dark-mode');
   const nextTheme = isDark ? 'light-mode' : 'dark-mode';
   applyThemeClass(nextTheme);
   await dbSetConfig('theme', nextTheme);
-  await dbAddClientActivity('tema_alterado', `Tema alterado para ${nextTheme}`);
+  await dbAddClientActivity('tema_alterado', `Tema alterado para ${nextTheme}`, clienteLogado || null);
   const pg = document.querySelector('.page.active');
   if (pg && pg.id === 'page-relatorios') renderGraficos();
 });
@@ -1864,7 +1878,11 @@ document.querySelectorAll('.nav-item[data-page]').forEach(link =>
   link.addEventListener('click', (e) => { e.preventDefault(); irPara(link.dataset.page); })
 );
 document.querySelectorAll('[data-goto]').forEach(btn =>
-  btn.addEventListener('click', () => irPara(btn.dataset.goto))
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    irPara(btn.dataset.goto);
+  })
 );
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-goto]');
