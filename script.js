@@ -25,6 +25,7 @@ function validateSupabaseConfig() {
 let dbReady = false;
 let dbMode = 'supabase';
 let supabase = null;
+let clientSchemaReady = false;
 
 async function initDB() {
   const ok = await initSupabaseDB();
@@ -70,6 +71,8 @@ function clearMemoryData() {
   chatInternoMsgs = [];
   directMsgs = {};
   FUNCIONARIOS = [];
+  CLIENTES = [];
+  clientSchemaReady = false;
 }
 
 function isDBReady() {
@@ -108,6 +111,7 @@ async function reloadAllDataSupabase() {
   const [
     ticketRows,
     staffRows,
+    clientRows,
     notifRows,
     geralRows,
     dmRows,
@@ -116,6 +120,7 @@ async function reloadAllDataSupabase() {
   ] = await Promise.all([
     supabase.from('tickets').select('*').order('created_at', { ascending: true }),
     supabase.from('support_staff').select('*').order('id', { ascending: true }),
+    supabase.from('clients').select('*').order('created_at', { ascending: true }),
     supabase.from('notifications').select('*').order('created_at', { ascending: false }).limit(20),
     supabase.from('chat_messages').select('*').eq('chat_key', 'GERAL').order('created_at', { ascending: true }),
     supabase.from('chat_messages').select('*').neq('chat_key', 'GERAL').not('chat_key', 'like', 'SUPORTE_%').order('created_at', { ascending: true }),
@@ -123,11 +128,19 @@ async function reloadAllDataSupabase() {
     supabase.from('chat_messages').select('*').like('chat_key', 'SUPORTE_%').order('created_at', { ascending: true })
   ]);
 
-  const error = [ticketRows, staffRows, notifRows, geralRows, dmRows, chatRows, suporteMsgRows].find(r => r.error)?.error;
+  const clientSchemaMissing = clientRows.error && ['42P01', 'PGRST205', 'PGRST204'].includes(clientRows.error.code);
+  if (clientRows.error && clientSchemaMissing) {
+    console.warn('Tabela de clientes ainda nao encontrada. Execute bancoDeDados.sql para habilitar cadastro de clientes.', clientRows.error);
+  }
+  clientSchemaReady = !clientRows.error;
+
+  const error = [ticketRows, staffRows, notifRows, geralRows, dmRows, chatRows, suporteMsgRows].find(r => r.error)?.error
+    || (clientRows.error && !clientSchemaMissing ? clientRows.error : null);
   if (error) throw error;
 
   chamados = ticketRows.data.map(rowToTicket);
   FUNCIONARIOS = staffRows.data.map(rowToStaff);
+  CLIENTES = clientRows.error ? [] : clientRows.data.map(rowToClient);
 
   notificacoes = notifRows.data.map(r => ({
     titulo: r.titulo,
@@ -160,6 +173,7 @@ async function reloadAllDataSupabase() {
   chatsData = {};
   chatRows.data.forEach(c => {
     chatsData[c.cpf] = {
+      clientId: c.client_id || null,
       nome: c.nome,
       assunto: c.assunto,
       observacao: c.observacao,
@@ -172,6 +186,7 @@ async function reloadAllDataSupabase() {
 function rowToTicket(r) {
   return {
     id: r.id,
+    clientId: r.client_id || null,
     nome: r.user_name,
     cpf: r.user_cpf || '',
     email: r.user_email || '',
@@ -199,11 +214,22 @@ function rowToStaff(r) {
   };
 }
 
+function rowToClient(r) {
+  return {
+    id: r.id,
+    nome: r.name,
+    cpf: normalizeCpf(r.cpf || ''),
+    email: normalizeEmail(r.email || ''),
+    senha: r.senha,
+    data: r.created_at
+  };
+}
+
 // DB write helpers
 async function dbSaveTicket(t) {
   if (!isDBReady()) return;
   try {
-    const { error } = await supabase.from('tickets').upsert({
+    const payload = {
       id: t.id,
       user_name: t.nome,
       user_cpf: t.cpf || '',
@@ -218,7 +244,10 @@ async function dbSaveTicket(t) {
       historico: JSON.stringify(t.historico || []),
       created_at: t.data || new Date().toISOString(),
       updated_at: new Date().toISOString()
-    }, { onConflict: 'id' });
+    };
+    if (clientSchemaReady) payload.client_id = t.clientId || null;
+
+    const { error } = await supabase.from('tickets').upsert(payload, { onConflict: 'id' });
     if (error) throw error;
   } catch(e) { console.error('dbSaveTicket error:', e); }
 }
@@ -253,6 +282,36 @@ async function dbDeleteStaff(usuario) {
   } catch(e) { console.error(e); }
 }
 
+async function dbCreateClient(cliente) {
+  if (!isDBReady()) throw new Error('Banco Supabase indisponivel');
+  if (!clientSchemaReady) throw new Error('Schema de clientes nao instalado');
+  const { data, error } = await supabase.from('clients').insert({
+    name: cliente.nome,
+    cpf: normalizeCpf(cliente.cpf),
+    email: normalizeEmail(cliente.email),
+    senha: cliente.senha
+  }).select('*').single();
+  if (error) throw error;
+  return rowToClient(data);
+}
+
+async function dbAddClientActivity(action, details = '', client = clienteLogado) {
+  if (!isDBReady()) return;
+  if (!clientSchemaReady) return;
+  const ref = client || {};
+  try {
+    const { error } = await supabase.from('client_activity_log').insert({
+      client_id: ref.id || null,
+      client_name: ref.nome || '',
+      client_cpf: ref.cpf || '',
+      client_email: ref.email || '',
+      action,
+      details
+    });
+    if (error) throw error;
+  } catch(e) { console.error('dbAddClientActivity error:', e); }
+}
+
 async function dbAddNotif(titulo, texto, options = {}) {
   if (!isDBReady()) return;
   try {
@@ -282,14 +341,17 @@ async function dbSendChatMsg(chatKey, autor, texto, isStaff = false) {
 async function dbSaveSuporteChat(cpf, data) {
   if (!isDBReady()) return;
   try {
-    const { error } = await supabase.from('chats_suporte').upsert({
+    const payload = {
       cpf,
       nome: data.nome,
       assunto: data.assunto || '',
       observacao: data.observacao || '',
       responsavel: data.responsavel || '',
       encerrado: false
-    }, { onConflict: 'cpf' });
+    };
+    if (clientSchemaReady) payload.client_id = data.clientId || null;
+
+    const { error } = await supabase.from('chats_suporte').upsert(payload, { onConflict: 'cpf' });
     if (error) throw error;
   } catch(e) { console.error(e); }
 }
@@ -323,6 +385,10 @@ let lastReadTime = {};
 let editandoUsuario = null;
 let selectedProblem = '';
 let FUNCIONARIOS = [];
+let CLIENTES = [];
+let clienteLogado = null;
+let clientAuthRequired = false;
+let clientAuthShownOnEntry = false;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 function gerarId() {
@@ -335,6 +401,22 @@ function dataFormatada(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
   return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function normalizeCpf(value = '') {
+  return String(value).replace(/\D/g, '').slice(0, 11);
+}
+
+function formatCpf(value = '') {
+  const cpf = normalizeCpf(value);
+  return cpf
+    .replace(/(\d{3})(\d)/, '$1.$2')
+    .replace(/(\d{3})(\d)/, '$1.$2')
+    .replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+}
+
+function normalizeEmail(value = '') {
+  return String(value).trim().toLowerCase();
 }
 
 function toast(tipo, titulo, msg) {
@@ -393,6 +475,105 @@ function renderNotifs() {
 }
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
+// Cliente auth
+function clientePodeAlterar(acao = 'realizar esta acao') {
+  if (clienteLogado || logado) return true;
+  toast('info', 'Login necessario', `Faca login ou cadastre-se para ${acao}.`);
+  dbAddClientActivity('login_forcado', `Tentativa sem login: ${acao}`, null);
+  showClientAuth('login', {
+    required: true,
+    title: 'Login necessario',
+    copy: `Para ${acao}, entre ou cadastre-se como cliente.`
+  });
+  return false;
+}
+
+function switchClientAuthTab(tab) {
+  document.querySelectorAll('.client-auth-tab').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.clientAuthTab === tab)
+  );
+  document.querySelectorAll('.client-auth-form').forEach(form =>
+    form.classList.toggle('active', form.id === (tab === 'register' ? 'formClienteCadastro' : 'formClienteLogin'))
+  );
+  document.getElementById('clienteLoginError').textContent = '';
+  document.getElementById('clienteCadastroError').textContent = '';
+}
+
+function showClientAuth(tab = 'login', options = {}) {
+  const overlay = document.getElementById('clientAuthOverlay');
+  if (!overlay) return;
+  clientAuthRequired = Boolean(options.required);
+  document.getElementById('clientAuthTitle').textContent = options.title || 'Entre ou cadastre-se';
+  document.getElementById('clientAuthCopy').textContent = options.copy || 'Use sua conta para abrir chamados e conversar com o suporte, ou continue navegando sem login.';
+  document.getElementById('btnContinuarSemLogin').style.display = clientAuthRequired ? 'none' : '';
+  overlay.classList.add('open');
+  overlay.setAttribute('aria-hidden', 'false');
+  switchClientAuthTab(tab);
+  setTimeout(() => {
+    const first = document.querySelector('.client-auth-form.active input');
+    if (first) first.focus();
+  }, 80);
+}
+
+function closeClientAuth() {
+  const overlay = document.getElementById('clientAuthOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('open');
+  overlay.setAttribute('aria-hidden', 'true');
+  clientAuthRequired = false;
+}
+
+function updateClientSessionUI() {
+  const btn = document.getElementById('clientSessionBtn');
+  if (!btn) return;
+  const label = btn.querySelector('span');
+  if (clienteLogado) {
+    document.body.classList.add('client-logged-in');
+    const firstName = clienteLogado.nome.split(' ')[0] || 'Cliente';
+    label.textContent = firstName;
+    btn.title = `Cliente logado: ${clienteLogado.nome}`;
+  } else {
+    document.body.classList.remove('client-logged-in');
+    label.textContent = 'Entrar Cliente';
+    btn.title = 'Conta do cliente';
+  }
+}
+
+function preencherDadosCliente() {
+  if (!clienteLogado) return;
+  const cpfFormatado = formatCpf(clienteLogado.cpf);
+  const fields = [
+    ['fc-nome', clienteLogado.nome],
+    ['fc-cpf', cpfFormatado],
+    ['fc-email', clienteLogado.email],
+    ['chatNome', clienteLogado.nome],
+    ['chatCpf', cpfFormatado]
+  ];
+  fields.forEach(([id, value]) => {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+  });
+}
+
+function setClienteLogado(cliente) {
+  clienteLogado = cliente;
+  updateClientSessionUI();
+  preencherDadosCliente();
+  if (document.querySelector('.page.active')?.id === 'page-meus') renderMeusChamados();
+  if (document.querySelector('.page.active')?.id === 'page-suporte') renderSuportePage();
+}
+
+function findClienteByCredential(credential, senha) {
+  const cpf = normalizeCpf(credential);
+  const email = normalizeEmail(credential);
+  return CLIENTES.find(c =>
+    c.senha === senha && (
+      (cpf && c.cpf === cpf) ||
+      (email && normalizeEmail(c.email) === email)
+    )
+  );
+}
+
 function irPara(pagina) {
   if ((pagina === 'equipe' || pagina === 'relatorios' || pagina === 'chat') && !logado) {
     toast('error', 'Acesso Restrito', 'Faça login para acessar esta página.');
@@ -418,6 +599,7 @@ function irPara(pagina) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 
   if (pagina === 'home')       atualizarHome();
+  if (pagina === 'abrir')      preencherDadosCliente();
   if (pagina === 'meus')       renderMeusChamados();
   if (pagina === 'painel')     renderPainel();
   if (pagina === 'relatorios') renderGraficos();
@@ -529,6 +711,8 @@ function autoAssignTicket(tipo, setorSolicitante) {
 // ─── Form submit (new ticket) ─────────────────────────────────────────────────
 document.getElementById('formChamado').addEventListener('submit', async function(e) {
   e.preventDefault();
+  if (!clientePodeAlterar('abrir um chamado')) return;
+  if (clienteLogado && !logado) preencherDadosCliente();
   if (!validarForm()) return;
 
   let descricaoChamado = '';
@@ -541,9 +725,10 @@ document.getElementById('formChamado').addEventListener('submit', async function
 
   const novo = {
     id:          gerarId(),
-    nome:        document.getElementById('fc-nome').value.trim(),
-    cpf:         document.getElementById('fc-cpf').value.trim(),
-    email:       document.getElementById('fc-email').value.trim(),
+    clientId:    clienteLogado?.id || null,
+    nome:        clienteLogado && !logado ? clienteLogado.nome : document.getElementById('fc-nome').value.trim(),
+    cpf:         clienteLogado && !logado ? formatCpf(clienteLogado.cpf) : document.getElementById('fc-cpf').value.trim(),
+    email:       clienteLogado && !logado ? clienteLogado.email : document.getElementById('fc-email').value.trim(),
     setor:       document.getElementById('fc-setor').value,
     tipo:        selectedProblem,
     prioridade:  'Não definida',
@@ -562,10 +747,12 @@ document.getElementById('formChamado').addEventListener('submit', async function
 
   chamados.push(novo);
   await dbSaveTicket(novo);
+  await dbAddClientActivity('chamado_aberto', `Chamado ${novo.id}: ${novo.tipo} / ${novo.setor}`);
 
   await addNotif(`Chamado ${novo.id} aberto`, `${novo.tipo} · ${novo.setor}`);
   toast('success', 'Chamado aberto!', `ID: ${novo.id} — ${novo.tipo}`);
   resetChamadoForm();
+  if (clienteLogado && !logado) preencherDadosCliente();
   irPara('meus');
 });
 
@@ -641,6 +828,14 @@ function renderMeusChamados() {
         && (!prio   || c.prioridade === prio);
   });
 
+  if (clienteLogado && !logado) {
+    lista = lista.filter(c =>
+      String(c.clientId || '') === String(clienteLogado.id) ||
+      normalizeCpf(c.cpf) === clienteLogado.cpf ||
+      normalizeEmail(c.email) === clienteLogado.email
+    );
+  }
+
   const cont = document.getElementById('meusChamadosList');
   if (lista.length === 0) {
     cont.innerHTML = `<div class="empty-state">
@@ -659,6 +854,110 @@ function renderMeusChamados() {
 });
 
 // ─── Login ────────────────────────────────────────────────────────────────────
+document.querySelectorAll('.client-auth-tab').forEach(btn =>
+  btn.addEventListener('click', () => switchClientAuthTab(btn.dataset.clientAuthTab))
+);
+
+document.getElementById('cliente-cad-cpf')?.addEventListener('input', function() {
+  this.value = formatCpf(this.value);
+});
+
+document.getElementById('cliente-login-id')?.addEventListener('input', function() {
+  if (/^\d[\d.\-]*$/.test(this.value)) this.value = formatCpf(this.value);
+});
+
+document.getElementById('clientAuthClose')?.addEventListener('click', () => {
+  closeClientAuth();
+});
+
+document.getElementById('btnContinuarSemLogin')?.addEventListener('click', async () => {
+  await dbAddClientActivity('continuar_sem_login', 'Visitante optou por navegar sem login.', null);
+  closeClientAuth();
+  toast('info', 'Navegacao liberada', 'Para alterar dados, sera necessario fazer login.');
+});
+
+document.getElementById('btnIrLoginFuncionario')?.addEventListener('click', () => {
+  closeClientAuth();
+});
+
+document.getElementById('clientSessionBtn')?.addEventListener('click', async () => {
+  if (clienteLogado) {
+    if (!confirm(`Sair da conta de cliente ${clienteLogado.nome}?`)) return;
+    await dbAddClientActivity('logout_cliente', 'Cliente saiu da conta.');
+    clienteLogado = null;
+    updateClientSessionUI();
+    toast('info', 'Cliente desconectado', 'Voce continua navegando sem login de cliente.');
+    if (document.querySelector('.page.active')?.id === 'page-meus') renderMeusChamados();
+    return;
+  }
+  showClientAuth('login');
+});
+
+document.getElementById('formClienteLogin')?.addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const credential = document.getElementById('cliente-login-id').value.trim();
+  const senha = document.getElementById('cliente-login-pass').value;
+  const err = document.getElementById('clienteLoginError');
+  err.textContent = '';
+
+  if (!credential || !senha) {
+    err.textContent = 'Informe e-mail/CPF e senha.';
+    return;
+  }
+  if (!clientSchemaReady) {
+    err.textContent = 'Cadastro de clientes ainda nao habilitado no banco.';
+    return;
+  }
+
+  const cliente = findClienteByCredential(credential, senha);
+  if (!cliente) {
+    err.textContent = 'Cliente ou senha invalidos.';
+    return;
+  }
+
+  setClienteLogado(cliente);
+  await dbAddClientActivity('login_cliente', 'Cliente autenticado no site.', cliente);
+  closeClientAuth();
+  toast('success', 'Bem-vindo', `Ola, ${cliente.nome.split(' ')[0] || 'cliente'}!`);
+});
+
+document.getElementById('formClienteCadastro')?.addEventListener('submit', async function(e) {
+  e.preventDefault();
+  const nome = document.getElementById('cliente-cad-nome').value.trim();
+  const cpf = normalizeCpf(document.getElementById('cliente-cad-cpf').value);
+  const email = normalizeEmail(document.getElementById('cliente-cad-email').value);
+  const senha = document.getElementById('cliente-cad-pass').value;
+  const err = document.getElementById('clienteCadastroError');
+  err.textContent = '';
+
+  if (!nome || cpf.length !== 11 || !email || !/\S+@\S+\.\S+/.test(email) || !senha) {
+    err.textContent = 'Preencha nome, CPF, e-mail e senha validos.';
+    return;
+  }
+
+  if (CLIENTES.some(c => c.cpf === cpf || normalizeEmail(c.email) === email)) {
+    err.textContent = 'Ja existe um cliente cadastrado com este CPF ou e-mail.';
+    return;
+  }
+  if (!clientSchemaReady) {
+    err.textContent = 'Execute o SQL atualizado no Supabase para habilitar clientes.';
+    return;
+  }
+
+  try {
+    const cliente = await dbCreateClient({ nome, cpf, email, senha });
+    CLIENTES.push(cliente);
+    setClienteLogado(cliente);
+    await dbAddClientActivity('cadastro_cliente', 'Cliente cadastrado e autenticado.', cliente);
+    this.reset();
+    closeClientAuth();
+    toast('success', 'Cadastro concluido', `Bem-vindo, ${cliente.nome.split(' ')[0] || 'cliente'}!`);
+  } catch (errDb) {
+    console.error('Cadastro cliente error:', errDb);
+    err.textContent = 'Nao foi possivel cadastrar. Verifique se CPF ou e-mail ja existem.';
+  }
+});
+
 document.getElementById('formLogin').addEventListener('submit', async function(e) {
   e.preventDefault();
   document.getElementById('loginError').textContent = '';
@@ -1059,6 +1358,7 @@ function renderSuportePage() {
     }
   } else {
     chatMode = 'client';
+    if (clienteLogado) preencherDadosCliente();
     if (chatActiveCpf && chatsData[chatActiveCpf]) {
       document.getElementById('chatClienteLogin').style.display = 'none';
       document.getElementById('chatInterface').style.display = 'flex';
@@ -1073,10 +1373,18 @@ function renderSuportePage() {
 }
 
 window.iniciarChatCliente = async function() {
-  const cpf    = document.getElementById('chatCpf').value.trim();
-  const nome   = document.getElementById('chatNome').value.trim();
+  if (!clientePodeAlterar('iniciar um atendimento')) return;
+  if (clienteLogado && !logado) preencherDadosCliente();
+
+  let cpf      = document.getElementById('chatCpf').value.trim();
+  let nome     = document.getElementById('chatNome').value.trim();
   const duvida = document.getElementById('chatDuvida')?.value;
   const obs    = document.getElementById('chatObs')?.value.trim();
+
+  if (clienteLogado && !logado) {
+    cpf = formatCpf(clienteLogado.cpf);
+    nome = clienteLogado.nome;
+  }
 
   if (!cpf || !nome || !duvida) return toast('error', 'Atenção', 'Preencha Nome, CPF e selecione o assunto.');
   if (chatsData[cpf] && chatsData[cpf].nome.toLowerCase() !== nome.toLowerCase())
@@ -1085,10 +1393,11 @@ window.iniciarChatCliente = async function() {
   chatActiveCpf = cpf;
   let isNew = false;
   if (!chatsData[cpf]) {
-    chatsData[cpf] = { nome, assunto: duvida, observacao: obs, mensagens: [] };
+    chatsData[cpf] = { clientId: clienteLogado?.id || null, nome, assunto: duvida, observacao: obs, mensagens: [] };
     isNew = true;
     typingBots.add(cpf);
     await dbSaveSuporteChat(cpf, chatsData[cpf]);
+    await dbAddClientActivity('chat_iniciado', `Atendimento iniciado: ${duvida}`);
   }
 
   renderSuportePage();
@@ -1097,6 +1406,7 @@ window.iniciarChatCliente = async function() {
     if (obs) {
       chatsData[cpf].mensagens.push({ autor: nome, texto: obs, isStaff: false, data: new Date().toISOString() });
       await dbSendChatMsg(`SUPORTE_${cpf}`, nome, obs, false);
+      await dbAddClientActivity('chat_mensagem_enviada', `Mensagem inicial no atendimento ${duvida}`);
     }
     setTimeout(async () => {
       typingBots.delete(cpf);
@@ -1202,6 +1512,7 @@ function renderChatMsgs(cpf) {
 
 window.enviarMsgChat = async function() {
   if (!chatActiveCpf) return;
+  if (chatMode === 'client' && !clientePodeAlterar('enviar mensagem ao suporte')) return;
   const inp   = document.getElementById('chatInput');
   const texto = inp.value.trim();
   if (!texto) return;
@@ -1211,6 +1522,7 @@ window.enviarMsgChat = async function() {
 
   chatsData[chatActiveCpf].mensagens.push({ autor, texto, isStaff, data: new Date().toISOString() });
   await dbSendChatMsg(`SUPORTE_${chatActiveCpf}`, autor, texto, isStaff);
+  if (chatMode === 'client') await dbAddClientActivity('chat_mensagem_enviada', `Mensagem enviada no atendimento ${chatActiveCpf}`);
   inp.value = '';
   renderChatMsgs(chatActiveCpf);
 
@@ -1500,17 +1812,27 @@ document.getElementById('btnUpdateReports')?.addEventListener('click', renderGra
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
 const themeToggle = document.getElementById('themeToggle');
-document.body.className = 'light-mode';
+
+function applyThemeClass(theme) {
+  const dark = theme === 'dark-mode';
+  document.body.classList.toggle('dark-mode', dark);
+  document.body.classList.toggle('light-mode', !dark);
+}
+
+applyThemeClass('light-mode');
 
 async function loadAppTheme() {
   const savedTheme = await dbGetConfig('theme', 'light-mode');
-  document.body.className = savedTheme === 'dark-mode' ? 'dark-mode' : 'light-mode';
+  applyThemeClass(savedTheme === 'dark-mode' ? 'dark-mode' : 'light-mode');
 }
 
 themeToggle.addEventListener('click', async () => {
+  if (!clientePodeAlterar('alterar o tema do site')) return;
   const isDark = document.body.classList.contains('dark-mode');
-  document.body.className = isDark ? 'light-mode' : 'dark-mode';
-  await dbSetConfig('theme', document.body.className);
+  const nextTheme = isDark ? 'light-mode' : 'dark-mode';
+  applyThemeClass(nextTheme);
+  await dbSetConfig('theme', nextTheme);
+  await dbAddClientActivity('tema_alterado', `Tema alterado para ${nextTheme}`);
   const pg = document.querySelector('.page.active');
   if (pg && pg.id === 'page-relatorios') renderGraficos();
 });
@@ -1563,6 +1885,7 @@ async function pollUpdates() {
     const before = JSON.stringify({
       chamados: chamados.map(t => [t.id, t.status, t.prioridade, t.responsavel, (t.observacoes || []).length]),
       funcionarios: FUNCIONARIOS,
+      clientes: CLIENTES.map(c => [c.id, c.nome, c.cpf, c.email]),
       notificacoes,
       chats: Object.fromEntries(Object.entries(chatsData).map(([cpf, c]) => [cpf, [c.responsavel, c.mensagens?.length || 0]])),
       chatInterno: chatInternoMsgs.length,
@@ -1570,10 +1893,15 @@ async function pollUpdates() {
     });
 
     await reloadAllData();
+    if (clienteLogado) {
+      const freshClient = CLIENTES.find(c => String(c.id) === String(clienteLogado.id));
+      if (freshClient) clienteLogado = freshClient;
+    }
 
     const after = JSON.stringify({
       chamados: chamados.map(t => [t.id, t.status, t.prioridade, t.responsavel, (t.observacoes || []).length]),
       funcionarios: FUNCIONARIOS,
+      clientes: CLIENTES.map(c => [c.id, c.nome, c.cpf, c.email]),
       notificacoes,
       chats: Object.fromEntries(Object.entries(chatsData).map(([cpf, c]) => [cpf, [c.responsavel, c.mensagens?.length || 0]])),
       chatInterno: chatInternoMsgs.length,
@@ -1584,6 +1912,8 @@ async function pollUpdates() {
       atualizarHome();
       renderMeusChamados();
       renderNotifs();
+      updateClientSessionUI();
+      if (clienteLogado) preencherDadosCliente();
       if (logado) { renderPainelLista(); atualizarStatsEmp(); updateChatBadge(); }
       const pg = document.querySelector('.page.active');
       if (pg && pg.id === 'page-equipe') renderEquipe();
@@ -1638,6 +1968,12 @@ function showDBStatus(ok) {
   renderNotifs();
   atualizarHome();
   renderEquipe();
+  updateClientSessionUI();
+
+  if (!clientAuthShownOnEntry) {
+    clientAuthShownOnEntry = true;
+    setTimeout(() => showClientAuth('login'), 450);
+  }
 
   if (ok) {
     startPolling(3000); // poll every 3 seconds when DB is available

@@ -72,6 +72,10 @@
     </nav>
 
     <div class="nav-controls">
+      <button class="client-session-btn" id="clientSessionBtn" type="button" title="Conta do cliente">
+        <i class="ti ti-user-circle"></i>
+        <span>Entrar Cliente</span>
+      </button>
       <button class="ctrl-btn req-admin" id="notifBtn" title="Notificações" aria-label="Notificações">
         <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
         <span class="notif-badge" id="notifBadge" style="display:none">0</span>
@@ -731,6 +735,68 @@
   </section>
 
 </main>
+
+<div class="client-auth-overlay" id="clientAuthOverlay" aria-hidden="true">
+  <div class="client-auth-card">
+    <div class="client-auth-head">
+      <div>
+        <span class="client-auth-kicker">Acesso do cliente</span>
+        <h2 id="clientAuthTitle">Entre ou cadastre-se</h2>
+      </div>
+      <button class="modal-close" id="clientAuthClose" type="button" aria-label="Fechar">&times;</button>
+    </div>
+
+    <p class="client-auth-copy" id="clientAuthCopy">
+      Use sua conta para abrir chamados e conversar com o suporte, ou continue navegando sem login.
+    </p>
+
+    <div class="client-auth-tabs" role="tablist">
+      <button class="client-auth-tab active" type="button" data-client-auth-tab="login">Login</button>
+      <button class="client-auth-tab" type="button" data-client-auth-tab="register">Cadastro</button>
+    </div>
+
+    <form id="formClienteLogin" class="client-auth-form active" novalidate>
+      <div class="form-group">
+        <label for="cliente-login-id">E-mail ou CPF</label>
+        <input type="text" id="cliente-login-id" placeholder="seu@email.com ou 000.000.000-00" required/>
+      </div>
+      <div class="form-group">
+        <label for="cliente-login-pass">Senha</label>
+        <input type="password" id="cliente-login-pass" placeholder="Sua senha" required/>
+      </div>
+      <span class="login-error" id="clienteLoginError"></span>
+      <button type="submit" class="btn-primary full">Entrar como cliente</button>
+    </form>
+
+    <form id="formClienteCadastro" class="client-auth-form" novalidate>
+      <div class="form-group">
+        <label for="cliente-cad-nome">Nome completo</label>
+        <input type="text" id="cliente-cad-nome" placeholder="Seu nome completo" required/>
+      </div>
+      <div class="form-grid client-auth-grid">
+        <div class="form-group">
+          <label for="cliente-cad-cpf">CPF</label>
+          <input type="text" id="cliente-cad-cpf" placeholder="000.000.000-00" maxlength="14" required/>
+        </div>
+        <div class="form-group">
+          <label for="cliente-cad-email">E-mail</label>
+          <input type="email" id="cliente-cad-email" placeholder="seu@email.com" required/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="cliente-cad-pass">Senha</label>
+        <input type="password" id="cliente-cad-pass" placeholder="Crie uma senha" required/>
+      </div>
+      <span class="login-error" id="clienteCadastroError"></span>
+      <button type="submit" class="btn-primary full">Cadastrar e entrar</button>
+    </form>
+
+    <div class="client-auth-actions">
+      <button type="button" class="btn-ghost full" id="btnContinuarSemLogin">Continuar sem login</button>
+      <button type="button" class="btn-link" data-goto="painel" id="btnIrLoginFuncionario">Sou funcionario</button>
+    </div>
+  </div>
+</div>
 
 <div class="modal-overlay" id="modalOverlay">
   <div class="modal-box" id="modalBox">
