@@ -747,7 +747,9 @@ async function openAccountSettings(section = 'geral') {
   const overlay = document.getElementById('settingsOverlay');
   overlay.classList.add('open');
   overlay.setAttribute('aria-hidden', 'false');
-  setTimeout(() => document.getElementById('settingsSearch')?.focus(), 80);
+  if (window.matchMedia('(min-width: 701px)').matches) {
+    setTimeout(() => document.getElementById('settingsSearch')?.focus(), 80);
+  }
 }
 
 function closeAccountSettings() {

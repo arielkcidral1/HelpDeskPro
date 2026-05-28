@@ -1327,8 +1327,35 @@ body.chat-compact .chat-meta { margin-top: .2rem; }
   .sobre-grid { grid-template-columns: 1fr; }
   .modal-meta-grid { grid-template-columns: 1fr; }
   .emp-profile-card { flex-direction: column; align-items: flex-start; }
-  .settings-panel { grid-template-columns: 1fr; height: calc(100vh - 1rem); }
-  .settings-sidebar { border-right: 0; border-bottom: 1px solid var(--border); max-height: 45vh; }
+  .settings-panel {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: calc(100dvh - 1rem);
+  }
+  .settings-sidebar {
+    border-right: 0; border-bottom: 1px solid var(--border);
+    overflow: visible; padding-bottom: 1rem;
+  }
+  .settings-menu {
+    flex-direction: row; gap: .45rem;
+    overflow-x: auto; padding: .2rem .1rem .35rem;
+    scroll-snap-type: x proximity;
+  }
+  .settings-menu::-webkit-scrollbar { display: none; }
+  .settings-menu-item {
+    flex: 0 0 min(220px, 72vw);
+    grid-template-columns: 26px 1fr;
+    align-items: center;
+    min-height: 56px;
+    padding: .75rem .85rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    scroll-snap-align: start;
+  }
+  .settings-menu-item.disconnect { margin-top: 0; }
+  .settings-menu-desc { display: none; }
+  .settings-detail { min-height: 0; }
+  .settings-content { min-height: 0; }
 }
 @media (max-width: 700px) {
   .nav-links { display: none; }
@@ -1424,10 +1451,45 @@ body.chat-compact .chat-meta { margin-top: .2rem; }
   .equipe-grid { grid-template-columns: 1fr; }
   .client-auth-card { padding: 1.35rem; }
   .client-auth-grid { grid-template-columns: 1fr; }
-  .settings-overlay { padding: .5rem; }
-  .settings-sidebar, .settings-content, .settings-detail-head { padding-left: 1rem; padding-right: 1rem; }
+  .settings-overlay { padding: 0; align-items: stretch; }
+  .settings-panel {
+    width: 100%; height: 100dvh;
+    border-radius: 0; border: 0;
+  }
+  .settings-sidebar {
+    padding: calc(.85rem + env(safe-area-inset-top)) 1rem .75rem;
+  }
+  .settings-title-row { margin-bottom: .75rem; }
+  .settings-title-row h2 { font-size: 1.15rem; }
+  .settings-search { padding: .7rem .85rem; margin-bottom: .75rem; }
+  .settings-search input { font-size: 16px; }
+  .settings-profile {
+    gap: .7rem; padding: .55rem .15rem .75rem;
+    margin-bottom: .55rem;
+  }
+  .settings-avatar { width: 42px; height: 42px; font-size: .95rem; }
+  .settings-profile strong { font-size: .9rem; }
+  .settings-profile span { font-size: .74rem; overflow-wrap: anywhere; }
+  .settings-menu-item {
+    flex-basis: min(190px, 76vw);
+    min-height: 52px;
+    padding: .68rem .75rem;
+  }
+  .settings-detail-head {
+    padding: .85rem 1rem .75rem;
+  }
+  .settings-detail-head h3 { font-size: 1.05rem; }
+  .settings-content {
+    padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+  }
   .settings-form-grid { grid-template-columns: 1fr; }
   .settings-row { align-items: flex-start; }
+  .settings-actions { flex-direction: column; align-items: stretch; }
+  .settings-actions .btn-primary,
+  .settings-actions .btn-ghost {
+    width: 100%; justify-content: center; min-height: 46px;
+  }
+  .settings-section-card { padding: 1rem; border-radius: var(--r-md); }
   .danger-action { width: 100%; justify-content: center; min-height: 50px; }
   #page-suporte .container,
   #page-chat .container {
