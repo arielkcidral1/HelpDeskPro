@@ -137,6 +137,7 @@ body.dark-mode .site-header { background: rgba(7,14,28,.88); }
 body.is-logged-in .req-login { display: flex !important; }
 .req-admin { display: none !important; }
 body.is-admin .req-admin { display: flex !important; }
+body.client-logged-in #notifBtn { display: flex !important; }
 body.is-logged-in .nav-item[data-page="abrir"],
 body.is-logged-in .nav-item[data-page="meus"],
 body.is-logged-in [data-goto="abrir"],
@@ -1130,6 +1131,29 @@ body.client-logged-in .account-settings-btn { display: flex; }
 .settings-switch input:checked + .settings-slider::before { transform: translateX(20px); }
 .settings-actions { display: flex; gap: .75rem; flex-wrap: wrap; margin-top: 1rem; }
 .settings-muted { color: var(--text-3); font-size: .78rem; margin-top: .7rem; }
+.twofactor-status {
+  display: inline-flex; align-items: center; gap: .45rem;
+  margin-top: .9rem; padding: .55rem .75rem;
+  border-radius: var(--r-md);
+  background: var(--green-l); color: var(--green);
+  font-size: .85rem; font-weight: 800;
+}
+.twofactor-secret {
+  margin-top: 1rem; padding: .85rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.twofactor-secret span {
+  display: block; color: var(--text-2);
+  font-size: .75rem; font-weight: 700;
+  margin-bottom: .35rem;
+}
+.twofactor-secret code {
+  display: block; overflow-wrap: anywhere;
+  font-family: var(--mono); font-size: .86rem;
+  color: var(--text);
+}
 .settings-shortcuts {
   display: grid; grid-template-columns: 1fr auto; gap: .75rem 1rem;
   align-items: center; margin-top: .85rem;

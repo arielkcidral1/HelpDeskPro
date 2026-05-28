@@ -449,6 +449,45 @@ function normalizeEmail(value = '') {
   return String(value).trim().toLowerCase();
 }
 
+function randomBase32(length = 20) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => alphabet[b % alphabet.length]).join('');
+}
+
+function base32ToBytes(secret) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const clean = String(secret).replace(/[^A-Z2-7]/gi, '').toUpperCase();
+  let bits = '';
+  clean.split('').forEach(ch => {
+    const value = alphabet.indexOf(ch);
+    if (value >= 0) bits += value.toString(2).padStart(5, '0');
+  });
+  const bytes = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  return new Uint8Array(bytes);
+}
+
+async function generateTotp(secret, stepOffset = 0) {
+  const key = await crypto.subtle.importKey('raw', base32ToBytes(secret), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const counter = Math.floor(Date.now() / 30000) + stepOffset;
+  const buffer = new ArrayBuffer(8);
+  const view = new DataView(buffer);
+  view.setUint32(4, counter);
+  const hash = new Uint8Array(await crypto.subtle.sign('HMAC', key, buffer));
+  const offset = hash[hash.length - 1] & 0xf;
+  const code = ((hash[offset] & 0x7f) << 24) | ((hash[offset + 1] & 0xff) << 16) | ((hash[offset + 2] & 0xff) << 8) | (hash[offset + 3] & 0xff);
+  return String(code % 1000000).padStart(6, '0');
+}
+
+async function verifyTotp(secret, code) {
+  const normalized = String(code || '').replace(/\D/g, '');
+  if (normalized.length !== 6 || !secret) return false;
+  const checks = await Promise.all([-1, 0, 1].map(offset => generateTotp(secret, offset)));
+  return checks.includes(normalized);
+}
+
 function oauthCpfFromUserId(userId = '') {
   let hash = 0;
   const raw = String(userId || `${Date.now()}${Math.random()}`);
@@ -478,7 +517,33 @@ async function addNotif(titulo, texto, options = {}) {
   notificacoes.unshift({ titulo, texto, data: new Date().toISOString(), ...options });
   if (notificacoes.length > 20) notificacoes.pop();
   await dbAddNotif(titulo, texto, options);
+  if (options.clientEmail && options.sendEmail !== false) await sendClientEmailNotification(titulo, texto, options.clientEmail);
   renderNotifs();
+}
+
+async function addClientNotif(cliente, titulo, texto, options = {}) {
+  if (!cliente) return addNotif(titulo, texto, options);
+  const prefs = await loadPrefsForAccount({ type: 'client', key: cliente.id });
+  return addNotif(titulo, texto, {
+    ...options,
+    destinatario: `client:${cliente.id}`,
+    clientEmail: cliente.email,
+    sendEmail: prefs.emailNotifications !== false
+  });
+}
+
+async function sendClientEmailNotification(titulo, texto, email) {
+  const webhook = HELP_DESK_SUPABASE.emailWebhook || '';
+  if (!webhook || !email) return;
+  try {
+    await fetch(webhook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: email, subject: titulo, text: texto, app: 'HelpDeskPro' })
+    });
+  } catch(error) {
+    console.warn('Email notification error:', error);
+  }
 }
 
 function renderNotifs() {
@@ -498,8 +563,13 @@ function renderNotifs() {
       if (n.ignorar && n.ignorar === funcLogado.usuario) return false;
       return true;
     });
+  } else if (clienteLogado) {
+    myNotifs = notificacoes.filter(n =>
+      n.destinatario === `client:${clienteLogado.id}` ||
+      normalizeEmail(n.clientEmail || '') === normalizeEmail(clienteLogado.email)
+    );
   } else {
-    myNotifs = notificacoes.filter(n => !n.destinatario && !n.ignorar);
+    myNotifs = [];
   }
 
   const qtd = myNotifs.length;
@@ -638,6 +708,15 @@ function findClienteByCredential(credential, senha) {
   );
 }
 
+function findClientForTicket(ticket) {
+  if (!ticket) return null;
+  return CLIENTES.find(c =>
+    String(ticket.clientId || '') === String(c.id) ||
+    (ticket.cpf && normalizeCpf(ticket.cpf) === normalizeCpf(c.cpf)) ||
+    (ticket.email && normalizeEmail(ticket.email) === normalizeEmail(c.email))
+  ) || null;
+}
+
 const DEFAULT_ACCOUNT_PREFS = {
   notificationsEnabled: true,
   securityNotices: true,
@@ -648,7 +727,10 @@ const DEFAULT_ACCOUNT_PREFS = {
   temporarySupportMessages: false,
   enterToSend: true,
   compactChat: false,
-  panelDefaultTab: 'meus'
+  panelDefaultTab: 'meus',
+  twoFactorEnabled: false,
+  twoFactorSecret: '',
+  emailNotifications: true
 };
 
 const SETTINGS_ITEMS = [
@@ -723,6 +805,26 @@ async function saveCurrentAccountPrefs(partial) {
   if (key) await dbSetConfig(key, JSON.stringify(currentAccountPrefs));
   applyAccountPrefsToUI();
   renderNotifs();
+}
+
+async function loadPrefsForAccount(account) {
+  const key = getAccountPrefsKey(account);
+  if (!key) return { ...DEFAULT_ACCOUNT_PREFS };
+  const raw = await dbGetConfig(key, '{}');
+  try {
+    return { ...DEFAULT_ACCOUNT_PREFS, ...(JSON.parse(raw || '{}')) };
+  } catch(e) {
+    return { ...DEFAULT_ACCOUNT_PREFS };
+  }
+}
+
+async function verifyAccountTwoFactor(account) {
+  const prefs = await loadPrefsForAccount(account);
+  if (!prefs.twoFactorEnabled) return true;
+  const code = prompt('Digite o codigo de 6 digitos do seu aplicativo autenticador.');
+  const ok = await verifyTotp(prefs.twoFactorSecret, code);
+  if (!ok) toast('error', 'ADF invalido', 'Codigo incorreto ou expirado.');
+  return ok;
 }
 
 function applyAccountPrefsToUI() {
@@ -872,7 +974,8 @@ function renderSettingsConta() {
           <div class="form-group full-width"><span class="login-error" id="settingsAccountError"></span></div>
           <div class="settings-actions"><button type="submit" class="btn-primary sm">Salvar senha</button></div>
         </form>
-      </div>`;
+      </div>
+      ${renderTwoFactorSettings()}`;
   }
 
   return `
@@ -888,6 +991,7 @@ function renderSettingsConta() {
         <div class="settings-actions"><button type="submit" class="btn-primary sm">Salvar alterações</button></div>
       </form>
     </div>
+    ${renderTwoFactorSettings()}
     <div class="settings-section-card danger-zone">
       <h4>Excluir conta</h4>
       <p>Remove seu cadastro de cliente e encerra a sessao neste navegador. Seus chamados antigos podem continuar no historico operacional do suporte.</p>
@@ -895,6 +999,36 @@ function renderSettingsConta() {
         <button type="button" class="btn-ghost danger-action" id="deleteClientAccountBtn"><i class="ti ti-trash"></i> Excluir minha conta</button>
       </div>
       <p class="settings-muted">Essa acao nao pode ser desfeita.</p>
+    </div>`;
+}
+
+function renderTwoFactorSettings() {
+  const enabled = Boolean(currentAccountPrefs.twoFactorEnabled);
+  const secret = currentAccountPrefs.twoFactorSecret || '';
+  return `
+    <div class="settings-section-card">
+      <h4>ADF - Autenticacao de dois fatores</h4>
+      <p>Use um aplicativo autenticador para pedir um codigo de 6 digitos no login desta conta.</p>
+      ${enabled ? `
+        <div class="twofactor-status"><i class="ti ti-shield-check"></i> ADF ativado</div>
+        <div class="settings-actions">
+          <button type="button" class="btn-ghost sm" id="disableTwoFactorBtn">Desativar ADF</button>
+        </div>` : `
+        <div class="twofactor-secret" id="twoFactorSetupBox" style="display:none;">
+          <span>Chave manual</span>
+          <code id="twoFactorSecretValue">${escapeHtml(secret)}</code>
+        </div>
+        <div class="settings-form-grid">
+          <div class="form-group full-width">
+            <label for="twoFactorCodeInput">Codigo do aplicativo</label>
+            <input type="text" id="twoFactorCodeInput" inputmode="numeric" maxlength="6" placeholder="000000">
+          </div>
+          <div class="form-group full-width"><span class="login-error" id="twoFactorSettingsError"></span></div>
+        </div>
+        <div class="settings-actions">
+          <button type="button" class="btn-ghost sm" id="prepareTwoFactorBtn">Gerar chave ADF</button>
+          <button type="button" class="btn-primary sm" id="enableTwoFactorBtn">Ativar ADF</button>
+        </div>`}
     </div>`;
 }
 
@@ -962,6 +1096,7 @@ function renderSettingsNotificacoes() {
       <h4>Alertas</h4>
       <p>Defina quais notificações do HelpDesk devem ficar visíveis para esta conta.</p>
       ${settingsSwitchRow('notificationsEnabled', 'Mostrar notificações', 'Exibe o contador e a lista de notificações.', currentAccountPrefs.notificationsEnabled)}
+      ${clienteLogado ? settingsSwitchRow('emailNotifications', 'Enviar também por Gmail', 'Espelha alertas de chamados e suporte para o e-mail da conta.', currentAccountPrefs.emailNotifications) : ''}
       ${settingsSwitchRow('securityNotices', 'Avisos de segurança', 'Mostra avisos sobre login, senha e alterações importantes.', currentAccountPrefs.securityNotices)}
     </div>`;
 }
@@ -1046,6 +1181,9 @@ function bindSettingsContentEvents(section) {
   document.getElementById('settingsClientAccountForm')?.addEventListener('submit', saveClientAccountSettings);
   document.getElementById('settingsStaffAccountForm')?.addEventListener('submit', saveStaffAccountSettings);
   document.getElementById('deleteClientAccountBtn')?.addEventListener('click', deleteClientAccount);
+  document.getElementById('prepareTwoFactorBtn')?.addEventListener('click', prepareTwoFactorSetup);
+  document.getElementById('enableTwoFactorBtn')?.addEventListener('click', enableTwoFactor);
+  document.getElementById('disableTwoFactorBtn')?.addEventListener('click', disableTwoFactor);
 
   document.querySelectorAll('[data-settings-goto]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1084,6 +1222,43 @@ async function saveClientAccountSettings(e) {
     console.error('saveClientAccountSettings error:', error);
     err.textContent = 'Não foi possível salvar. Verifique o e-mail informado.';
   }
+}
+
+async function prepareTwoFactorSetup() {
+  const secret = currentAccountPrefs.twoFactorSecret || randomBase32();
+  currentAccountPrefs.twoFactorSecret = secret;
+  const box = document.getElementById('twoFactorSetupBox');
+  const value = document.getElementById('twoFactorSecretValue');
+  if (box) box.style.display = 'block';
+  if (value) value.textContent = secret;
+  toast('info', 'Chave ADF gerada', 'Adicione essa chave no seu aplicativo autenticador e informe o codigo.');
+}
+
+async function enableTwoFactor() {
+  const err = document.getElementById('twoFactorSettingsError');
+  if (err) err.textContent = '';
+  if (!currentAccountPrefs.twoFactorSecret) prepareTwoFactorSetup();
+  const code = document.getElementById('twoFactorCodeInput')?.value || '';
+  const ok = await verifyTotp(currentAccountPrefs.twoFactorSecret, code);
+  if (!ok) {
+    if (err) err.textContent = 'Codigo invalido. Confira o aplicativo autenticador.';
+    return;
+  }
+  await saveCurrentAccountPrefs({ twoFactorEnabled: true, twoFactorSecret: currentAccountPrefs.twoFactorSecret });
+  toast('success', 'ADF ativado', 'O proximo login vai pedir o codigo de autenticacao.');
+  renderAccountSettings();
+}
+
+async function disableTwoFactor() {
+  const code = prompt('Digite o codigo ADF atual para desativar.');
+  const ok = await verifyTotp(currentAccountPrefs.twoFactorSecret, code);
+  if (!ok) {
+    toast('error', 'ADF invalido', 'Nao foi possivel desativar.');
+    return;
+  }
+  await saveCurrentAccountPrefs({ twoFactorEnabled: false, twoFactorSecret: '' });
+  toast('success', 'ADF desativado', 'A conta nao pedira codigo no proximo login.');
+  renderAccountSettings();
 }
 
 async function deleteClientAccount() {
@@ -1183,6 +1358,8 @@ async function handleOAuthClientSession() {
 
     const cliente = await ensureClientFromOAuthUser(user);
     if (!cliente) return;
+    const twoFactorOk = await verifyAccountTwoFactor({ type: 'client', key: cliente.id });
+    if (!twoFactorOk) return;
     setClienteLogado(cliente);
     await dbAddClientActivity('login_cliente_oauth', `Cliente autenticado via ${user.app_metadata?.provider || 'OAuth'}.`, cliente);
     closeClientAuth();
@@ -1435,8 +1612,10 @@ document.getElementById('formChamado').addEventListener('submit', async function
   }
 
   chamados.push(novo);
+  const clienteNotificado = clienteLogado && !logado ? clienteLogado : null;
   await dbSaveTicket(novo);
   await dbAddClientActivity('chamado_aberto', `Chamado ${novo.id}: ${novo.tipo} / ${novo.setor}`);
+  if (clienteNotificado) await addClientNotif(clienteNotificado, `Chamado ${novo.id} aberto`, `${novo.tipo} - ${novo.setor}`);
 
   await addNotif(`Chamado ${novo.id} aberto`, `${novo.tipo} · ${novo.setor}`);
   toast('success', 'Chamado aberto!', `ID: ${novo.id} — ${novo.tipo}`);
@@ -1609,6 +1788,8 @@ document.getElementById('formClienteLogin')?.addEventListener('submit', async fu
     err.textContent = 'Cliente ou senha invalidos.';
     return;
   }
+  const twoFactorOk = await verifyAccountTwoFactor({ type: 'client', key: cliente.id });
+  if (!twoFactorOk) return;
 
   setClienteLogado(cliente);
   await dbAddClientActivity('login_cliente', 'Cliente autenticado no site.', cliente);
@@ -1666,6 +1847,8 @@ document.getElementById('formLogin').addEventListener('submit', async function(e
     document.getElementById('loginError').textContent = 'Usuário ou senha inválidos.';
     return;
   }
+  const twoFactorOk = await verifyAccountTwoFactor({ type: 'staff', key: func.usuario });
+  if (!twoFactorOk) return;
   funcLogado = func;
   logado = true;
   closeClientAuth();
@@ -2072,6 +2255,10 @@ async function salvarModal(id) {
   }
 
   await dbSaveTicket(chamados[idx]);
+  const client = findClientForTicket(chamados[idx]);
+  if (client) {
+    await addClientNotif(client, `Chamado ${id} atualizado`, novoStatus ? `Status: ${novoStatus}` : 'Observacao adicionada pelo suporte');
+  }
 
   await addNotif(`Chamado ${id} atualizado`, novoStatus ? `Status: ${novoStatus}` : 'Observação adicionada');
   toast('info', `Chamado ${id} atualizado`, novoStatus ? `Novo status: ${novoStatus}` : '');
@@ -2412,6 +2599,15 @@ window.enviarMsgChat = async function() {
   inp.value = '';
   renderChatMsgs(chatActiveCpf);
 
+  if (isStaff) {
+    const chat = chatsData[chatActiveCpf];
+    const client = CLIENTES.find(c =>
+      String(chat?.clientId || '') === String(c.id) ||
+      normalizeCpf(chatActiveCpf) === normalizeCpf(c.cpf)
+    );
+    if (client) await addClientNotif(client, 'Nova mensagem do suporte', texto);
+  }
+
   if (chatMode === 'client') {
     toast('success', 'Enviado', 'Mensagem enviada à gerência.');
     await addNotif('Nova Mensagem (Suporte)', `De: ${autor}`);
@@ -2728,6 +2924,11 @@ document.getElementById('notifBtn').addEventListener('click', (e) => {
   document.getElementById('notifPanel').classList.toggle('open');
 });
 document.getElementById('clearNotifs').addEventListener('click', async () => {
+  if (clienteLogado && !logado) {
+    notificacoes = notificacoes.filter(n => n.destinatario !== `client:${clienteLogado.id}`);
+    renderNotifs();
+    return;
+  }
   notificacoes = [];
   if (isDBReady()) {
     try { await supabase.from('notifications').delete().gte('id', 0); } catch(e) {}
