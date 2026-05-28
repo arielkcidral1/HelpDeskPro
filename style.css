@@ -137,6 +137,10 @@ body.dark-mode .site-header { background: rgba(7,14,28,.88); }
 body.is-logged-in .req-login { display: flex !important; }
 .req-admin { display: none !important; }
 body.is-admin .req-admin { display: flex !important; }
+body.is-logged-in .nav-item[data-page="abrir"],
+body.is-logged-in .nav-item[data-page="meus"],
+body.is-logged-in [data-goto="abrir"],
+body.is-logged-in [data-goto="meus"] { display: none; }
 
 .nav-controls { display: flex; align-items: center; gap: .4rem; flex-shrink: 0; }
 
@@ -1258,6 +1262,13 @@ body.chat-compact .chat-meta { margin-top: .2rem; }
   flex: 0 0 auto; width: 46px; min-width: 46px; height: 46px;
   padding: 0; justify-content: center;
 }
+
+.danger-zone {
+  border-color: rgba(220,38,38,.24);
+  background: var(--red-l);
+}
+.danger-zone h4 { color: var(--red); }
+.danger-zone .settings-muted { color: var(--text-2); }
 
 .back-to-top {
   position: fixed; bottom: 2rem; left: 2rem; z-index: 300;

@@ -312,6 +312,13 @@ async function dbUpdateClient(cliente) {
   return rowToClient(data);
 }
 
+async function dbDeleteClient(id) {
+  if (!isDBReady()) throw new Error('Banco Supabase indisponivel');
+  if (!clientSchemaReady) throw new Error('Schema de clientes nao instalado');
+  const { error } = await supabase.from('clients').delete().eq('id', id);
+  if (error) throw error;
+}
+
 async function dbAddClientActivity(action, details = '', client = clienteLogado) {
   if (!isDBReady()) return;
   if (!clientSchemaReady) return;
@@ -871,6 +878,14 @@ function renderSettingsConta() {
         <div class="form-group full-width"><span class="login-error" id="settingsAccountError"></span></div>
         <div class="settings-actions"><button type="submit" class="btn-primary sm">Salvar alterações</button></div>
       </form>
+    </div>
+    <div class="settings-section-card danger-zone">
+      <h4>Excluir conta</h4>
+      <p>Remove seu cadastro de cliente e encerra a sessao neste navegador. Seus chamados antigos podem continuar no historico operacional do suporte.</p>
+      <div class="settings-actions">
+        <button type="button" class="btn-ghost sm" id="deleteClientAccountBtn" style="color: var(--red); border-color: var(--red);"><i class="ti ti-trash"></i> Excluir minha conta</button>
+      </div>
+      <p class="settings-muted">Essa acao nao pode ser desfeita.</p>
     </div>`;
 }
 
@@ -982,6 +997,12 @@ function settingsSwitchRow(key, title, desc, checked) {
 }
 
 function bindSettingsContentEvents(section) {
+  if (logado && funcLogado) {
+    document.querySelectorAll('#settingsDefaultPage option[value="abrir"], #settingsDefaultPage option[value="meus"]').forEach(option => option.remove());
+    const defaultPageSelect = document.getElementById('settingsDefaultPage');
+    if (defaultPageSelect && ['abrir', 'meus'].includes(defaultPageSelect.value)) defaultPageSelect.value = 'painel';
+  }
+
   document.querySelectorAll('[data-pref-key]').forEach(input => {
     input.addEventListener('change', () => saveCurrentAccountPrefs({ [input.dataset.prefKey]: input.checked }));
   });
@@ -997,7 +1018,9 @@ function bindSettingsContentEvents(section) {
   });
 
   document.getElementById('saveGeneralPrefs')?.addEventListener('click', async () => {
-    await saveCurrentAccountPrefs({ defaultPage: document.getElementById('settingsDefaultPage').value });
+    let defaultPage = document.getElementById('settingsDefaultPage').value;
+    if (logado && funcLogado && ['abrir', 'meus'].includes(defaultPage)) defaultPage = 'painel';
+    await saveCurrentAccountPrefs({ defaultPage });
     toast('success', 'Preferências salvas', 'Configurações gerais atualizadas.');
   });
 
@@ -1013,6 +1036,7 @@ function bindSettingsContentEvents(section) {
 
   document.getElementById('settingsClientAccountForm')?.addEventListener('submit', saveClientAccountSettings);
   document.getElementById('settingsStaffAccountForm')?.addEventListener('submit', saveStaffAccountSettings);
+  document.getElementById('deleteClientAccountBtn')?.addEventListener('click', deleteClientAccount);
 
   document.querySelectorAll('[data-settings-goto]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -1050,6 +1074,38 @@ async function saveClientAccountSettings(e) {
   } catch(error) {
     console.error('saveClientAccountSettings error:', error);
     err.textContent = 'Não foi possível salvar. Verifique o e-mail informado.';
+  }
+}
+
+async function deleteClientAccount() {
+  if (!clienteLogado) return;
+  const nome = clienteLogado.nome || 'cliente';
+  const confirmation = prompt(`Para excluir a conta de ${nome}, digite EXCLUIR.`);
+  if (confirmation !== 'EXCLUIR') {
+    toast('info', 'Exclusao cancelada', 'A conta nao foi alterada.');
+    return;
+  }
+
+  const deletedClient = clienteLogado;
+  try {
+    await dbAddClientActivity('conta_cliente_excluida', 'Cliente solicitou exclusao da propria conta.', deletedClient);
+    await dbDeleteClient(deletedClient.id);
+    CLIENTES = CLIENTES.filter(c => String(c.id) !== String(deletedClient.id));
+    if (chatsData[formatCpf(deletedClient.cpf)]) {
+      delete chatsData[formatCpf(deletedClient.cpf)];
+    }
+    clienteLogado = null;
+    closeAccountSettings();
+    updateClientSessionUI();
+    updateAccountSettingsButton();
+    await loadCurrentAccountPrefs();
+    renderNotifs();
+    toast('success', 'Conta excluida', 'Seu cadastro de cliente foi removido.');
+    const activePage = document.querySelector('.page.active')?.id;
+    if (['page-abrir','page-meus','page-suporte'].includes(activePage)) irPara('home');
+  } catch(error) {
+    console.error('deleteClientAccount error:', error);
+    toast('error', 'Nao foi possivel excluir', 'Verifique a conexao com o banco e tente novamente.');
   }
 }
 
@@ -1107,6 +1163,11 @@ async function handleSettingsDisconnect() {
 }
 
 function irPara(pagina) {
+  if (logado && funcLogado && ['abrir', 'meus'].includes(pagina)) {
+    toast('info', 'Area de cliente', 'Funcionarios acompanham chamados pelo Painel Funcionario.');
+    pagina = 'painel';
+  }
+
   const acaoClientePorPagina = {
     abrir: 'abrir um chamado',
     meus: 'ver seus chamados'
@@ -1515,6 +1576,7 @@ document.getElementById('formLogin').addEventListener('submit', async function(e
   }
   funcLogado = func;
   logado = true;
+  closeClientAuth();
   await loadLastRead();
   entrarPainel();
 });
