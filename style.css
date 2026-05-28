@@ -1402,16 +1402,22 @@ body.chat-compact .chat-meta { margin-top: .2rem; }
   }
   .settings-sidebar {
     border-right: 0; border-bottom: 1px solid var(--border);
-    overflow: hidden; padding-bottom: .85rem;
+    overflow: visible; min-width: 0; padding-bottom: .85rem;
   }
   .settings-profile { padding-bottom: .85rem; margin-bottom: .55rem; }
   .settings-menu {
     flex-direction: row; gap: .45rem;
-    overflow-x: auto; padding: .2rem .1rem .35rem;
+    max-width: 100%; min-width: 0;
+    overflow-x: scroll; overflow-y: hidden;
+    padding: .2rem .1rem .5rem;
     scroll-snap-type: x proximity;
-    scrollbar-width: none;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x;
   }
-  .settings-menu::-webkit-scrollbar { display: none; }
+  .settings-menu::-webkit-scrollbar { height: 4px; }
+  .settings-menu::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
   .settings-menu-item {
     flex: 0 0 min(220px, 72vw);
     grid-template-columns: 26px 1fr;
@@ -1424,10 +1430,11 @@ body.chat-compact .chat-meta { margin-top: .2rem; }
   }
   .settings-menu-item.disconnect { margin-top: 0; }
   .settings-menu-desc { display: none; }
-  .settings-detail { min-height: 0; }
+  .settings-detail { min-height: 0; overflow: hidden; }
   .settings-content {
-    min-height: 0;
+    min-height: 0; overflow-y: auto;
     -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
   }
 }
 @media (max-width: 700px) {
@@ -1547,6 +1554,7 @@ body.chat-compact .chat-meta { margin-top: .2rem; }
   .settings-profile span { font-size: .74rem; overflow-wrap: anywhere; }
   .settings-menu-item {
     flex-basis: min(190px, 76vw);
+    flex-shrink: 0;
     min-height: 52px;
     padding: .68rem .75rem;
   }
