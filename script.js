@@ -3150,7 +3150,7 @@ function showDBStatus(ok) {
   updateClientSessionUI();
   updateAccountSettingsButton();
 
-  if (!clientAuthShownOnEntry) {
+  if (!clientAuthShownOnEntry && !clienteLogado && !logado) {
     clientAuthShownOnEntry = true;
     setTimeout(() => showClientAuth('login'), 450);
   }
