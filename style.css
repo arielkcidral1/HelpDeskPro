@@ -1076,6 +1076,7 @@ body.client-logged-in .account-settings-btn { display: flex; }
 .settings-content {
   flex: 1; overflow-y: auto;
   padding: 1.55rem;
+  scroll-padding: 1rem;
 }
 .settings-section-card {
   border: 1px solid var(--border);
@@ -1083,6 +1084,7 @@ body.client-logged-in .account-settings-btn { display: flex; }
   padding: 1.15rem;
   background: var(--bg);
   margin-bottom: 1rem;
+  scroll-margin: 1rem;
 }
 .settings-section-card h4 {
   font-size: .95rem; margin-bottom: .35rem;
@@ -1095,6 +1097,17 @@ body.client-logged-in .account-settings-btn { display: flex; }
   margin-top: 1rem;
 }
 .settings-form-grid .form-group.full-width { grid-column: 1 / -1; }
+.settings-form-grid input,
+.settings-form-grid select,
+.settings-form-grid textarea {
+  min-height: 44px;
+  background: var(--surface);
+}
+.settings-form-grid input:disabled {
+  color: var(--text-2);
+  opacity: 1;
+  cursor: not-allowed;
+}
 .settings-row {
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
   padding: .9rem 0;
@@ -1129,7 +1142,14 @@ body.client-logged-in .account-settings-btn { display: flex; }
   background: var(--accent); border-color: var(--accent);
 }
 .settings-switch input:checked + .settings-slider::before { transform: translateX(20px); }
-.settings-actions { display: flex; gap: .75rem; flex-wrap: wrap; margin-top: 1rem; }
+.settings-actions {
+  display: flex; gap: .75rem; flex-wrap: wrap;
+  margin-top: 1rem; padding-top: .15rem;
+}
+.settings-actions .btn-primary,
+.settings-actions .btn-ghost {
+  min-height: 42px;
+}
 .settings-muted { color: var(--text-3); font-size: .78rem; margin-top: .7rem; }
 .twofactor-status {
   display: inline-flex; align-items: center; gap: .45rem;
@@ -1382,12 +1402,14 @@ body.chat-compact .chat-meta { margin-top: .2rem; }
   }
   .settings-sidebar {
     border-right: 0; border-bottom: 1px solid var(--border);
-    overflow: visible; padding-bottom: 1rem;
+    overflow: hidden; padding-bottom: .85rem;
   }
+  .settings-profile { padding-bottom: .85rem; margin-bottom: .55rem; }
   .settings-menu {
     flex-direction: row; gap: .45rem;
     overflow-x: auto; padding: .2rem .1rem .35rem;
     scroll-snap-type: x proximity;
+    scrollbar-width: none;
   }
   .settings-menu::-webkit-scrollbar { display: none; }
   .settings-menu-item {
@@ -1403,7 +1425,10 @@ body.chat-compact .chat-meta { margin-top: .2rem; }
   .settings-menu-item.disconnect { margin-top: 0; }
   .settings-menu-desc { display: none; }
   .settings-detail { min-height: 0; }
-  .settings-content { min-height: 0; }
+  .settings-content {
+    min-height: 0;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 @media (max-width: 700px) {
   .nav-links { display: none; }
@@ -1530,16 +1555,39 @@ body.chat-compact .chat-meta { margin-top: .2rem; }
   }
   .settings-detail-head h3 { font-size: 1.05rem; }
   .settings-content {
-    padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom));
+    padding: .85rem .85rem calc(1.25rem + env(safe-area-inset-bottom));
   }
-  .settings-form-grid { grid-template-columns: 1fr; }
-  .settings-row { align-items: flex-start; }
+  .settings-form-grid { grid-template-columns: 1fr; gap: .85rem; }
+  .settings-form-grid .form-group.full-width { grid-column: auto; }
+  .settings-form-grid input,
+  .settings-form-grid select,
+  .settings-form-grid textarea {
+    min-height: 48px;
+    font-size: 16px;
+  }
+  .settings-row {
+    align-items: flex-start;
+    gap: .75rem;
+    padding: 1rem 0;
+  }
+  .settings-switch { width: 52px; height: 30px; }
+  .settings-slider::before { width: 24px; height: 24px; }
+  .settings-switch input:checked + .settings-slider::before { transform: translateX(22px); }
   .settings-actions { flex-direction: column; align-items: stretch; }
   .settings-actions .btn-primary,
   .settings-actions .btn-ghost {
-    width: 100%; justify-content: center; min-height: 46px;
+    width: 100%; justify-content: center; min-height: 50px;
   }
-  .settings-section-card { padding: 1rem; border-radius: var(--r-md); }
+  .settings-section-card {
+    padding: 1rem;
+    border-radius: var(--r-md);
+    margin-bottom: .85rem;
+  }
+  .twofactor-secret {
+    padding: .8rem;
+    max-height: 120px;
+    overflow-y: auto;
+  }
   .danger-action { width: 100%; justify-content: center; min-height: 50px; }
   #page-suporte .container,
   #page-chat .container {

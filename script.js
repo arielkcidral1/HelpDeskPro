@@ -910,6 +910,7 @@ function renderSettingsMenu() {
       settingsActiveSection = id;
       renderSettingsMenu();
       renderSettingsContent();
+      document.getElementById('settingsContent')?.scrollTo({ top: 0, behavior: 'smooth' });
     });
   });
 }
