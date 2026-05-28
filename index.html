@@ -813,6 +813,27 @@
   </div>
 </div>
 
+<div class="client-auth-overlay" id="oauthCpfOverlay" aria-hidden="true">
+  <div class="client-auth-card">
+    <div class="client-auth-head">
+      <div>
+        <span class="client-auth-kicker">Quase lá!</span>
+        <h2 id="oauthCpfTitle">Informe seu CPF</h2>
+      </div>
+      <button class="modal-close" id="oauthCpfClose" type="button" aria-label="Cancelar">&times;</button>
+    </div>
+    <p class="client-auth-copy">Para concluir seu cadastro, precisamos do seu CPF para vinculação dos chamados e segurança da conta.</p>
+    <form id="formOauthCpf" class="client-auth-form active" novalidate style="display: block;">
+      <div class="form-group">
+        <label for="oauth-cpf-input">CPF <span class="req">*</span></label>
+        <input type="text" id="oauth-cpf-input" placeholder="000.000.000-00" maxlength="14" oninput="this.value = this.value.replace(/\D/g, '').replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d)/, '$1.$2').replace(/(\d{3})(\d{1,2})$/, '$1-$2')" required/>
+      </div>
+      <span class="login-error" id="oauthCpfError"></span>
+      <button type="submit" class="btn-primary full">Concluir Cadastro</button>
+    </form>
+  </div>
+</div>
+
 <div class="settings-overlay" id="settingsOverlay" aria-hidden="true">
   <div class="settings-panel">
     <aside class="settings-sidebar">

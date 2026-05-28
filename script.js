@@ -1330,6 +1330,51 @@ async function signInClientWithOAuth(provider) {
   }
 }
 
+function requestCpfAsync(provider) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById('oauthCpfOverlay');
+    const form = document.getElementById('formOauthCpf');
+    const input = document.getElementById('oauth-cpf-input');
+    const errorSpan = document.getElementById('oauthCpfError');
+    const closeBtn = document.getElementById('oauthCpfClose');
+    const title = document.getElementById('oauthCpfTitle');
+    
+    if (!overlay) {
+      resolve(prompt(`Para concluir seu cadastro via ${provider}, por favor informe seu CPF (apenas números):`));
+      return;
+    }
+
+    title.textContent = `Cadastro via ${provider.charAt(0).toUpperCase() + provider.slice(1)}`;
+    input.value = '';
+    errorSpan.textContent = '';
+    overlay.classList.add('open');
+    overlay.setAttribute('aria-hidden', 'false');
+    setTimeout(() => input.focus(), 100);
+
+    const cleanup = () => {
+      overlay.classList.remove('open');
+      overlay.setAttribute('aria-hidden', 'true');
+      form.removeEventListener('submit', onSubmit);
+      closeBtn.removeEventListener('click', onClose);
+    };
+
+    const onSubmit = (e) => {
+      e.preventDefault();
+      const rawCpf = normalizeCpf(input.value);
+      if (rawCpf.length !== 11) return errorSpan.textContent = 'CPF inválido! Digite os 11 dígitos.';
+      if (CLIENTES.some(c => c.cpf === rawCpf)) return errorSpan.textContent = 'Este CPF já está cadastrado em outra conta.';
+      
+      cleanup();
+      resolve(rawCpf);
+    };
+
+    const onClose = () => { cleanup(); resolve(null); };
+
+    form.addEventListener('submit', onSubmit);
+    closeBtn.addEventListener('click', onClose);
+  });
+}
+
 async function ensureClientFromOAuthUser(user) {
   if (!user || !clientSchemaReady) return null;
   const provider = user.app_metadata?.provider || 'oauth';
@@ -1339,28 +1384,14 @@ async function ensureClientFromOAuthUser(user) {
   const existing = CLIENTES.find(c => normalizeEmail(c.email) === email);
   if (existing) return existing;
 
-  let cpf = '';
-  while (true) {
-    const inputCpf = prompt(`Para concluir seu cadastro via ${provider}, por favor informe seu CPF (apenas números):`);
-    
-    if (inputCpf === null) {
-      toast('error', 'Cadastro cancelado', 'O CPF é obrigatório para concluir o cadastro.');
-      if (supabase) {
-        try { await supabase.auth.signOut({ scope: 'local' }); } catch(e) {}
-      }
-      return null;
+  const cpf = await requestCpfAsync(provider);
+  
+  if (!cpf) {
+    toast('error', 'Cadastro cancelado', 'O CPF é obrigatório para concluir o cadastro.');
+    if (supabase) {
+      try { await supabase.auth.signOut({ scope: 'local' }); } catch(e) {}
     }
-    
-    cpf = normalizeCpf(inputCpf);
-    if (cpf.length !== 11) {
-      alert('CPF inválido! Por favor, digite os 11 dígitos.');
-      continue;
-    }
-    if (CLIENTES.some(c => c.cpf === cpf)) {
-      alert('Este CPF já está cadastrado em outra conta. Faça login com a conta correspondente ou informe outro CPF.');
-      continue;
-    }
-    break;
+    return null;
   }
 
   const cliente = await dbCreateClient({
