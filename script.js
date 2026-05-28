@@ -488,13 +488,6 @@ async function verifyTotp(secret, code) {
   return checks.includes(normalized);
 }
 
-function oauthCpfFromUserId(userId = '') {
-  let hash = 0;
-  const raw = String(userId || `${Date.now()}${Math.random()}`);
-  for (let i = 0; i < raw.length; i++) hash = (hash * 31 + raw.charCodeAt(i)) >>> 0;
-  return String(hash).padStart(11, '0').slice(-11);
-}
-
 function toast(tipo, titulo, msg) {
   const container = document.getElementById('toastContainer');
   const el = document.createElement('div');
@@ -1346,9 +1339,33 @@ async function ensureClientFromOAuthUser(user) {
   const existing = CLIENTES.find(c => normalizeEmail(c.email) === email);
   if (existing) return existing;
 
+  let cpf = '';
+  while (true) {
+    const inputCpf = prompt(`Para concluir seu cadastro via ${provider}, por favor informe seu CPF (apenas números):`);
+    
+    if (inputCpf === null) {
+      toast('error', 'Cadastro cancelado', 'O CPF é obrigatório para concluir o cadastro.');
+      if (supabase) {
+        try { await supabase.auth.signOut({ scope: 'local' }); } catch(e) {}
+      }
+      return null;
+    }
+    
+    cpf = normalizeCpf(inputCpf);
+    if (cpf.length !== 11) {
+      alert('CPF inválido! Por favor, digite os 11 dígitos.');
+      continue;
+    }
+    if (CLIENTES.some(c => c.cpf === cpf)) {
+      alert('Este CPF já está cadastrado em outra conta. Faça login com a conta correspondente ou informe outro CPF.');
+      continue;
+    }
+    break;
+  }
+
   const cliente = await dbCreateClient({
     nome,
-    cpf: oauthCpfFromUserId(user.id),
+    cpf: cpf,
     email,
     senha: `oauth:${provider}`
   });
