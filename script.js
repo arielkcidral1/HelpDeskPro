@@ -745,6 +745,17 @@ const SETTINGS_ITEMS = [
   { id: 'desconectar', icon: 'ti ti-logout', title: 'Desconectar', desc: '', disconnect: true }
 ];
 
+const SETTINGS_SEARCH_TERMS = {
+  geral: 'tema claro escuro aparencia inicio pagina padrao preferencias home painel suporte',
+  conta: 'conta dados nome cpf email e-mail senha seguranca segurança adf 2fa dois fatores autenticacao autenticador codigo excluir conta funcionario cliente login cargo',
+  privacidade: 'privacidade dados sensiveis sensíveis historico histórico modo discreto mensagens temporarias temporárias',
+  chamados: 'chamados solicitacoes solicitações setor padrao padrão preencher dados automaticamente painel atendimentos visao visão clientes',
+  suporte: 'suporte atendimento conversa chat mensagens enter enviar compacto gerencia gerência',
+  notificacoes: 'notificacoes notificações alertas avisos contador gmail email e-mail chamados mensagens suporte segurança',
+  atalhos: 'atalhos teclado alt abrir meus suporte tema acoes ações rapidas rápidas',
+  ajuda: 'ajuda feedback privacidade suporte sobre sistema central'
+};
+
 function escapeHtml(value = '') {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -888,8 +899,15 @@ function renderSettingsMenu() {
   const menu = document.getElementById('settingsMenu');
   const items = SETTINGS_ITEMS.filter(item => {
     if (!query) return true;
-    return `${item.title} ${item.desc}`.toLowerCase().includes(query);
+    const searchable = `${item.title} ${item.desc} ${SETTINGS_SEARCH_TERMS[item.id] || ''}`.toLowerCase();
+    return searchable.includes(query);
   });
+
+  if (query && items.length && !items.some(item => item.id === settingsActiveSection)) {
+    const firstContentMatch = items.find(item => !item.disconnect) || items[0];
+    settingsActiveSection = firstContentMatch.id;
+    renderSettingsContent();
+  }
 
   menu.innerHTML = items.map(item => `
     <button type="button" class="settings-menu-item ${item.disconnect ? 'disconnect' : ''} ${settingsActiveSection === item.id ? 'active' : ''}" data-settings-section="${item.id}">
@@ -1754,7 +1772,10 @@ document.getElementById('settingsClose')?.addEventListener('click', closeAccount
 document.getElementById('settingsOverlay')?.addEventListener('click', (e) => {
   if (e.target === e.currentTarget) closeAccountSettings();
 });
-document.getElementById('settingsSearch')?.addEventListener('input', renderSettingsMenu);
+document.getElementById('settingsSearch')?.addEventListener('input', () => {
+  renderSettingsMenu();
+  document.getElementById('settingsContent')?.scrollTo({ top: 0, behavior: 'smooth' });
+});
 
 document.getElementById('clientSessionBtn')?.addEventListener('click', async () => {
   if (clienteLogado) {
