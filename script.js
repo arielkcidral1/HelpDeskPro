@@ -43,7 +43,7 @@ async function initSupabaseDB() {
   try {
     const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
     supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false }
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
     });
 
     const { error } = await supabase.from('support_staff').select('id').limit(1);
@@ -447,6 +447,13 @@ function formatCpf(value = '') {
 
 function normalizeEmail(value = '') {
   return String(value).trim().toLowerCase();
+}
+
+function oauthCpfFromUserId(userId = '') {
+  let hash = 0;
+  const raw = String(userId || `${Date.now()}${Math.random()}`);
+  for (let i = 0; i < raw.length; i++) hash = (hash * 31 + raw.charCodeAt(i)) >>> 0;
+  return String(hash).padStart(11, '0').slice(-11);
 }
 
 function toast(tipo, titulo, msg) {
@@ -1096,6 +1103,9 @@ async function deleteClientAccount() {
     if (chatsData[formatCpf(deletedClient.cpf)]) {
       delete chatsData[formatCpf(deletedClient.cpf)];
     }
+    if (supabase) {
+      try { await supabase.auth.signOut({ scope: 'local' }); } catch(e) { console.warn('OAuth signOut error:', e); }
+    }
     clienteLogado = null;
     closeAccountSettings();
     updateClientSessionUI();
@@ -1108,6 +1118,79 @@ async function deleteClientAccount() {
   } catch(error) {
     console.error('deleteClientAccount error:', error);
     toast('error', 'Nao foi possivel excluir', 'Verifique a conexao com o banco e tente novamente.');
+  }
+}
+
+async function signInClientWithOAuth(provider) {
+  if (!isDBReady() || !supabase) {
+    toast('error', 'Banco indisponivel', 'Configure o Supabase antes de usar login social.');
+    return;
+  }
+  if (!clientSchemaReady) {
+    toast('error', 'Cadastro indisponivel', 'Execute o SQL atualizado no Supabase antes de usar login social.');
+    return;
+  }
+
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider,
+    options: {
+      redirectTo: window.location.origin + window.location.pathname
+    }
+  });
+  if (error) {
+    console.error('OAuth login error:', error);
+    toast('error', 'Login social indisponivel', 'Verifique se o provedor esta configurado no Supabase.');
+  }
+}
+
+async function ensureClientFromOAuthUser(user) {
+  if (!user || !clientSchemaReady) return null;
+  const provider = user.app_metadata?.provider || 'oauth';
+  const metadata = user.user_metadata || {};
+  const email = normalizeEmail(user.email || metadata.email || `${user.id}@${provider}.oauth.local`);
+  const nome = metadata.full_name || metadata.name || metadata.user_name || email.split('@')[0] || 'Cliente';
+  const existing = CLIENTES.find(c => normalizeEmail(c.email) === email);
+  if (existing) return existing;
+
+  const cliente = await dbCreateClient({
+    nome,
+    cpf: oauthCpfFromUserId(user.id),
+    email,
+    senha: `oauth:${provider}`
+  });
+  CLIENTES.push(cliente);
+  await dbAddClientActivity('cadastro_cliente_oauth', `Cliente cadastrado via ${provider}.`, cliente);
+  return cliente;
+}
+
+async function handleOAuthClientSession() {
+  if (!supabase || !clientSchemaReady) return;
+
+  const url = new URL(window.location.href);
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const oauthError = url.searchParams.get('error_description') || hash.get('error_description');
+  if (oauthError) {
+    toast('error', 'Login social cancelado', oauthError);
+    history.replaceState({}, document.title, window.location.pathname);
+    return;
+  }
+
+  try {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+    const user = data.session?.user;
+    if (!user) return;
+
+    const cliente = await ensureClientFromOAuthUser(user);
+    if (!cliente) return;
+    setClienteLogado(cliente);
+    await dbAddClientActivity('login_cliente_oauth', `Cliente autenticado via ${user.app_metadata?.provider || 'OAuth'}.`, cliente);
+    closeClientAuth();
+    toast('success', 'Login realizado', `Ola, ${cliente.nome.split(' ')[0] || 'cliente'}!`);
+    history.replaceState({}, document.title, window.location.pathname);
+  } catch(error) {
+    console.error('handleOAuthClientSession error:', error);
+    toast('error', 'Login social indisponivel', 'Nao foi possivel concluir o login automatico.');
   }
 }
 
@@ -1133,6 +1216,9 @@ async function saveStaffAccountSettings(e) {
 
 async function logoutCliente(showToast = true) {
   if (clienteLogado) await dbAddClientActivity('logout_cliente', 'Cliente saiu da conta.');
+  if (supabase) {
+    try { await supabase.auth.signOut({ scope: 'local' }); } catch(e) { console.warn('OAuth signOut error:', e); }
+  }
   clienteLogado = null;
   updateClientSessionUI();
   updateAccountSettingsButton();
@@ -1496,6 +1582,10 @@ document.getElementById('clientSessionBtn')?.addEventListener('click', async () 
     return;
   }
   showClientAuth('login');
+});
+
+document.querySelectorAll('[data-client-oauth]').forEach(btn => {
+  btn.addEventListener('click', () => signInClientWithOAuth(btn.dataset.clientOauth));
 });
 
 document.getElementById('formClienteLogin')?.addEventListener('submit', async function(e) {
@@ -2778,7 +2868,10 @@ function showDBStatus(ok) {
 
   const ok = await initDB();
   showDBStatus(ok);
-  if (ok) await loadAppTheme();
+  if (ok) {
+    await loadAppTheme();
+    await handleOAuthClientSession();
+  }
 
   renderNotifs();
   atualizarHome();

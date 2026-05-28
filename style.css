@@ -938,6 +938,30 @@ body.client-logged-in .account-settings-btn { display: flex; }
   color: var(--accent);
   box-shadow: var(--shadow-sm);
 }
+.client-social-auth {
+  display: grid; grid-template-columns: 1fr 1fr; gap: .75rem;
+  margin-bottom: 1.15rem;
+}
+.social-auth-btn {
+  min-height: 46px;
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  padding: .75rem .85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--text);
+  font-size: .84rem; font-weight: 700;
+  cursor: pointer;
+  transition: border-color var(--t), background var(--t), color var(--t), transform var(--t-spring);
+  touch-action: manipulation;
+}
+.social-auth-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+  transform: translateY(-1px);
+}
+.social-auth-btn i { font-size: 1.15rem; flex-shrink: 0; }
 .client-auth-form { display: none; }
 .client-auth-form.active { display: block; }
 .client-auth-grid {
@@ -1451,6 +1475,8 @@ body.chat-compact .chat-meta { margin-top: .2rem; }
   .equipe-grid { grid-template-columns: 1fr; }
   .client-auth-card { padding: 1.35rem; }
   .client-auth-grid { grid-template-columns: 1fr; }
+  .client-social-auth { grid-template-columns: 1fr; gap: .6rem; }
+  .social-auth-btn { width: 100%; min-height: 48px; font-size: .86rem; }
   .settings-overlay { padding: 0; align-items: stretch; }
   .settings-panel {
     width: 100%; height: 100dvh;
