@@ -1273,11 +1273,57 @@ async function disableTwoFactor() {
   renderAccountSettings();
 }
 
+function requestDeleteConfirmationAsync(nome) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById('deleteAccountOverlay');
+    const form = document.getElementById('formDeleteAccount');
+    const input = document.getElementById('delete-account-input');
+    const errorSpan = document.getElementById('deleteAccountError');
+    const closeBtn = document.getElementById('deleteAccountClose');
+    const copy = document.getElementById('deleteAccountCopy');
+
+    if (!overlay) {
+      const confirmation = prompt(`Para excluir a conta de ${nome}, digite EXCLUIR.`);
+      resolve(confirmation === 'EXCLUIR');
+      return;
+    }
+
+    copy.innerHTML = `Para excluir a conta de <strong>${escapeHtml(nome)}</strong>, digite <strong>EXCLUIR</strong> abaixo.`;
+    input.value = '';
+    errorSpan.textContent = '';
+    overlay.classList.add('open');
+    overlay.setAttribute('aria-hidden', 'false');
+    setTimeout(() => input.focus(), 100);
+
+    const cleanup = () => {
+      overlay.classList.remove('open');
+      overlay.setAttribute('aria-hidden', 'true');
+      form.removeEventListener('submit', onSubmit);
+      closeBtn.removeEventListener('click', onClose);
+    };
+
+    const onSubmit = (e) => {
+      e.preventDefault();
+      if (input.value.trim() !== 'EXCLUIR') {
+        errorSpan.textContent = 'Palavra incorreta. Digite EXCLUIR em maiúsculas.';
+        return;
+      }
+      cleanup();
+      resolve(true);
+    };
+
+    const onClose = () => { cleanup(); resolve(false); };
+
+    form.addEventListener('submit', onSubmit);
+    closeBtn.addEventListener('click', onClose);
+  });
+}
+
 async function deleteClientAccount() {
   if (!clienteLogado) return;
   const nome = clienteLogado.nome || 'cliente';
-  const confirmation = prompt(`Para excluir a conta de ${nome}, digite EXCLUIR.`);
-  if (confirmation !== 'EXCLUIR') {
+  const confirmed = await requestDeleteConfirmationAsync(nome);
+  if (!confirmed) {
     toast('info', 'Exclusao cancelada', 'A conta nao foi alterada.');
     return;
   }
@@ -1485,10 +1531,45 @@ function logoutFuncionario(showToast = false) {
   if (['page-equipe','page-relatorios','page-suporte','page-chat'].includes(activePage)) irPara('home');
 }
 
+function requestDisconnectConfirmationAsync(nome) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById('disconnectOverlay');
+    const copy = document.getElementById('disconnectCopy');
+    const closeBtn = document.getElementById('disconnectClose');
+    const cancelBtn = document.getElementById('disconnectCancelBtn');
+    const confirmBtn = document.getElementById('disconnectConfirmBtn');
+
+    if (!overlay) {
+      resolve(confirm(`Desconectar ${nome}?`));
+      return;
+    }
+
+    copy.innerHTML = `Tem certeza que deseja desconectar a conta de <strong>${escapeHtml(nome)}</strong>?`;
+    overlay.classList.add('open');
+    overlay.setAttribute('aria-hidden', 'false');
+
+    const cleanup = () => {
+      overlay.classList.remove('open');
+      overlay.setAttribute('aria-hidden', 'true');
+      closeBtn.removeEventListener('click', onCancel);
+      cancelBtn.removeEventListener('click', onCancel);
+      confirmBtn.removeEventListener('click', onConfirm);
+    };
+
+    const onCancel = () => { cleanup(); resolve(false); };
+    const onConfirm = () => { cleanup(); resolve(true); };
+
+    closeBtn.addEventListener('click', onCancel);
+    cancelBtn.addEventListener('click', onCancel);
+    confirmBtn.addEventListener('click', onConfirm);
+  });
+}
+
 async function handleSettingsDisconnect() {
   const account = getCurrentAccount();
   if (!account) return;
-  if (!confirm(`Desconectar ${account.name}?`)) return;
+  const confirmed = await requestDisconnectConfirmationAsync(account.name);
+  if (!confirmed) return;
   closeAccountSettings();
   if (account.type === 'staff') logoutFuncionario(true);
   else await logoutCliente(true);
@@ -2995,14 +3076,25 @@ document.getElementById('notifBtn').addEventListener('click', (e) => {
 });
 document.getElementById('clearNotifs').addEventListener('click', async () => {
   if (clienteLogado && !logado) {
-    notificacoes = notificacoes.filter(n => n.destinatario !== `client:${clienteLogado.id}`);
+    const dest = `client:${clienteLogado.id}`;
+    notificacoes = notificacoes.filter(n => n.destinatario !== dest);
+    if (isDBReady()) {
+      try { await supabase.from('notifications').delete().eq('destinatario', dest); } catch(e) {}
+    }
     renderNotifs();
     return;
   }
-  notificacoes = [];
-  if (isDBReady()) {
-    try { await supabase.from('notifications').delete().gte('id', 0); } catch(e) {}
+  
+  if (logado && funcLogado) {
+    notificacoes = notificacoes.filter(n => n.destinatario !== '' && n.destinatario !== funcLogado.usuario);
+    if (isDBReady()) {
+      try { await supabase.from('notifications').delete().in('destinatario', ['', funcLogado.usuario]); } catch(e) {}
+    }
+    renderNotifs();
+    return;
   }
+
+  notificacoes = [];
   renderNotifs();
 });
 document.addEventListener('click', (e) => {

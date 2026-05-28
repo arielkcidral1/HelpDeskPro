@@ -834,6 +834,44 @@
   </div>
 </div>
 
+<div class="client-auth-overlay" id="deleteAccountOverlay" aria-hidden="true">
+  <div class="client-auth-card">
+    <div class="client-auth-head">
+      <div>
+        <span class="client-auth-kicker" style="color: var(--red);">Zona de Perigo</span>
+        <h2>Excluir Conta</h2>
+      </div>
+      <button class="modal-close" id="deleteAccountClose" type="button" aria-label="Cancelar">&times;</button>
+    </div>
+    <p class="client-auth-copy" id="deleteAccountCopy">Para excluir sua conta, digite <strong>EXCLUIR</strong> abaixo.</p>
+    <form id="formDeleteAccount" class="client-auth-form active" novalidate style="display: block;">
+      <div class="form-group">
+        <label for="delete-account-input">Confirmação <span class="req">*</span></label>
+        <input type="text" id="delete-account-input" placeholder="Digite EXCLUIR" required autocomplete="off"/>
+      </div>
+      <span class="login-error" id="deleteAccountError"></span>
+      <button type="submit" class="btn-primary full" style="background-color: var(--red); border-color: var(--red);">Confirmar Exclusão</button>
+    </form>
+  </div>
+</div>
+
+<div class="client-auth-overlay" id="disconnectOverlay" aria-hidden="true">
+  <div class="client-auth-card">
+    <div class="client-auth-head">
+      <div>
+        <span class="client-auth-kicker">Sair</span>
+        <h2>Desconectar Conta</h2>
+      </div>
+      <button class="modal-close" id="disconnectClose" type="button" aria-label="Cancelar">&times;</button>
+    </div>
+    <p class="client-auth-copy" id="disconnectCopy">Tem certeza que deseja desconectar?</p>
+    <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+      <button type="button" class="btn-ghost full" id="disconnectCancelBtn">Cancelar</button>
+      <button type="button" class="btn-primary full" id="disconnectConfirmBtn">Desconectar</button>
+    </div>
+  </div>
+</div>
+
 <div class="settings-overlay" id="settingsOverlay" aria-hidden="true">
   <div class="settings-panel">
     <aside class="settings-sidebar">
