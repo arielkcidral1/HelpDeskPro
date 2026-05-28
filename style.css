@@ -1269,6 +1269,25 @@ body.chat-compact .chat-meta { margin-top: .2rem; }
 }
 .danger-zone h4 { color: var(--red); }
 .danger-zone .settings-muted { color: var(--text-2); }
+.danger-zone .settings-actions { align-items: stretch; }
+.danger-action {
+  min-height: 46px;
+  padding: .75rem 1.15rem;
+  color: var(--red);
+  border-color: var(--red);
+  background: var(--surface);
+  font-weight: 700;
+  line-height: 1.2;
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.danger-action:hover {
+  color: #fff;
+  border-color: var(--red);
+  background: var(--red);
+}
+.danger-action i { font-size: 1rem; }
 
 .back-to-top {
   position: fixed; bottom: 2rem; left: 2rem; z-index: 300;
@@ -1409,6 +1428,7 @@ body.chat-compact .chat-meta { margin-top: .2rem; }
   .settings-sidebar, .settings-content, .settings-detail-head { padding-left: 1rem; padding-right: 1rem; }
   .settings-form-grid { grid-template-columns: 1fr; }
   .settings-row { align-items: flex-start; }
+  .danger-action { width: 100%; justify-content: center; min-height: 50px; }
   #page-suporte .container,
   #page-chat .container {
     padding-left: .75rem; padding-right: .75rem;

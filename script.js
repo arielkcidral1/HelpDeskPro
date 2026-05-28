@@ -883,7 +883,7 @@ function renderSettingsConta() {
       <h4>Excluir conta</h4>
       <p>Remove seu cadastro de cliente e encerra a sessao neste navegador. Seus chamados antigos podem continuar no historico operacional do suporte.</p>
       <div class="settings-actions">
-        <button type="button" class="btn-ghost sm" id="deleteClientAccountBtn" style="color: var(--red); border-color: var(--red);"><i class="ti ti-trash"></i> Excluir minha conta</button>
+        <button type="button" class="btn-ghost danger-action" id="deleteClientAccountBtn"><i class="ti ti-trash"></i> Excluir minha conta</button>
       </div>
       <p class="settings-muted">Essa acao nao pode ser desfeita.</p>
     </div>`;
